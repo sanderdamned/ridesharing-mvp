@@ -1,5 +1,3 @@
-Python 3.13.5 (v3.13.5:6cb20a219a8, Jun 11 2025, 12:23:45) [Clang 16.0.0 (clang-1600.0.26.6)] on darwin
-Enter "help" below or click "Help" above for more information.
 import streamlit as st
 from supabase import create_client, Client
 import datetime
@@ -89,40 +87,40 @@ def search_trips(rider_id):
             return
 
         # naive radius filter
-...         response = supabase.table("trips").select("*").execute()
-...         results = []
-...         for trip in response.data:
-...             dist = abs(trip["start_lat"] - o_lat) + abs(trip["end_lat"] - d_lat)
-...             if dist < 1:  # approx ~10-15km
-...                 results.append(trip)
-... 
-...         if results:
-...             for trip in results:
-...                 st.markdown(f"""
-...                 **From**: {trip["start_location"]} → **To**: {trip["end_location"]}  
-...                 **Departure**: {trip["datetime"]}  
-...                 **Seats**: {trip["seats_available"]}  
-...                 """)
-...                 if st.button(f"Request Seat for Trip {trip['id']}"):
-...                     supabase.table("trip_requests").insert({
-...                         "trip_id": trip["id"],
-...                         "rider_id": rider_id
-...                     }).execute()
-...                     st.success("Requested to join trip.")
-...         else:
-...             st.info("No matching trips found.")
-... 
-... # MAIN FLOW
-... if not st.session_state.user:
-...     login()
-... else:
-...     user_id = st.session_state.user.id
-...     st.sidebar.write("Logged in as", st.session_state.user.email)
-...     option = st.sidebar.selectbox("Choose Action", ["Post a Trip", "Search Trips", "Log out"])
-... 
-...     if option == "Post a Trip":
-...         post_trip(user_id)
-...     elif option == "Search Trips":
-...         search_trips(user_id)
-...     elif option == "Log out":
-...         st.session_state.user = None
+        response = supabase.table("trips").select("*").execute()
+        results = []
+        for trip in response.data:
+            dist = abs(trip["start_lat"] - o_lat) + abs(trip["end_lat"] - d_lat)
+            if dist < 1:  # approx ~10-15km
+                results.append(trip)
+
+        if results:
+            for trip in results:
+                st.markdown(f"""
+                **From**: {trip["start_location"]} → **To**: {trip["end_location"]}  
+                **Departure**: {trip["datetime"]}  
+                **Seats**: {trip["seats_available"]}  
+                """)
+                if st.button(f"Request Seat for Trip {trip['id']}"):
+                    supabase.table("trip_requests").insert({
+                        "trip_id": trip["id"],
+                        "rider_id": rider_id
+                    }).execute()
+                    st.success("Requested to join trip.")
+        else:
+            st.info("No matching trips found.")
+
+# MAIN FLOW
+if not st.session_state.user:
+    login()
+else:
+    user_id = st.session_state.user.id
+    st.sidebar.write("Logged in as", st.session_state.user.email)
+    option = st.sidebar.selectbox("Choose Action", ["Post a Trip", "Search Trips", "Log out"])
+
+    if option == "Post a Trip":
+        post_trip(user_id)
+    elif option == "Search Trips":
+        search_trips(user_id)
+    elif option == "Log out":
+        st.session_state.user = None
