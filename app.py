@@ -16,16 +16,18 @@ def login():
     email = st.text_input("Email")
     password = st.text_input("Password", type="password")
     if st.button("Login"):
-      try:
-    user = supabase.auth.sign_in_with_password({"email": email, "password": password})
-    st.write("Login response:", user)
-    if user.session is None:
-        st.error("Login failed — is email confirmed?")
-    else:
-        st.session_state["user"] = user
-        st.success("Logged in!")
-except Exception as e:
-    st.error(f"Login error: {e}")
+        try:
+            user = supabase.auth.sign_in_with_password({"email": email, "password": password})
+            st.write(user)
+            if user.session:
+                st.success("Logged in!")
+                st.session_state["user"] = user
+                st.experimental_rerun()
+            else:
+                st.error("Login failed, email not confirmed or wrong credentials")
+        except Exception as e:
+            st.error(f"Login error: {e}")
+
 
 def signup():
     st.subheader("Sign up")
