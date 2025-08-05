@@ -1,50 +1,138 @@
 import streamlit as st
-from supabase import create_client, Client
+from supabase import create_client
+from geopy.geocoders import Nominatim
+import datetime
 
-# Replace with your Supabase project URL and anon key
+# --- Supabase setup ---
 SUPABASE_URL = "https://ivzlapmdomoxwzwptixb.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml2emxhcG1kb21veHd6d3B0aXhiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTQzMzA1MDgsImV4cCI6MjA2OTkwNjUwOH0.tgjQ_RBX-62xlJv7RuugHrPuz7XxINHhc2zYF7laMGE"
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+geolocator = Nominatim(user_agent="rideshare-app-nl")
 
-st.title("🔐 Supabase Auth Test App")
+# --- Auth ---
+def login():
+    st.subheader("Login")
+    email = st.text_input("Email")
+    password = st.text_input("Password", type="password")
 
-# Show session user info if logged in
-if "user" in st.session_state:
-    st.success("Logged in as:")
-    st.json(st.session_state["user"])
-    if st.button("Logout"):
-        del st.session_state["user"]
+    if st.button("Login"):
+        try:
+            result = supabase.auth.sign_in_with_password({"email": email, "password": password})
+            if result.session:
+                st.session_state["user"] = {
+                    "id": result.user.id,
+                    "email": result.user.email,
+                }
+                st.success("Logged in!")
+                st.rerun()
+            else:
+                st.error("Login failed. Email might not be confirmed.")
+        except Exception as e:
+            st.error(f"Login error: {e}")
+
+def signup():
+    st.subheader("Sign Up")
+    email = st.text_input("Email", key="signup_email")
+    password = st.text_input("Password", type="password", key="signup_password")
+
+    if st.button("Sign Up"):
+        try:
+            result = supabase.auth.sign_up({"email": email, "password": password})
+            st.success("Signed up! Check your email to confirm before logging in.")
+        except Exception as e:
+            st.error(f"Signup failed: {e}")
+
+# --- Post Trip ---
+def post_trip(user_id):
+    st.subheader("Post a Trip")
+
+    start_postcode = st.text_input("Start Postal Code")
+    start_number = st.text_input("Start House Number")
+    end_postcode = st.text_input("End Postal Code")
+    end_number = st.text_input("End House Number")
+    departure_time = st.datetime_input("Departure Time", value=datetime.datetime.now())
+
+    if st.button("Submit Trip"):
+        try:
+            start_address = f"{start_postcode} {start_number}, Netherlands"
+            end_address = f"{end_postcode} {end_number}, Netherlands"
+
+            start_location = geolocator.geocode(start_address)
+            end_location = geolocator.geocode(end_address)
+
+            if not start_location or not end_location:
+                st.error("Could not find coordinates for one of the addresses.")
+                return
+
+            trip_data = {
+                "user_id": user_id,
+                "start_address": start_address,
+                "start_lat": start_location.latitude,
+                "start_lon": start_location.longitude,
+                "end_address": end_address,
+                "end_lat": end_location.latitude,
+                "end_lon": end_location.longitude,
+                "departure_time": departure_time.isoformat(),
+            }
+
+            supabase.table("trips").insert(trip_data).execute()
+            st.success("Trip posted successfully!")
+        except Exception as e:
+            st.error(f"Error posting trip: {e}")
+
+# --- View Trips ---
+def view_trips():
+    st.subheader("Available Trips")
+    try:
+        response = supabase.table("trips").select("*").order("departure_time").execute()
+        trips = response.data
+
+        if not trips:
+            st.info("No trips available.")
+            return
+
+        for trip in trips:
+            st.markdown(f"""
+            **From:** {trip['start_address']}  
+            **To:** {trip['end_address']}  
+            **Departure:** {trip['departure_time']}
+            """)
+            st.markdown("---")
+    except Exception as e:
+        st.error(f"Failed to load trips: {e}")
+
+# --- Main App ---
+def main():
+    st.title("🚗 Dutch Ridesharing Platform")
+
+    menu = ["Login", "Sign Up", "View Trips", "Post Trip", "Logout"]
+    choice = st.sidebar.selectbox("Menu", menu)
+
+    user = st.session_state.get("user")
+
+    if choice == "Login":
+        if user:
+            st.success(f"Already logged in as {user['email']}")
+        else:
+            login()
+
+    elif choice == "Sign Up":
+        signup()
+
+    elif choice == "View Trips":
+        view_trips()
+
+    elif choice == "Post Trip":
+        if not user:
+            st.warning("You must be logged in to post a trip.")
+        else:
+            post_trip(user_id=user["id"])
+
+    elif choice == "Logout":
+        st.session_state.clear()
+        st.success("Logged out.")
         st.rerun()
 
-else:
-    # Tabs for login and signup
-    tab1, tab2 = st.tabs(["🔐 Login", "🆕 Signup"])
-
-    with tab1:
-        st.subheader("Login")
-        email = st.text_input("Email", key="login_email")
-        password = st.text_input("Password", type="password", key="login_password")
-        if st.button("Login"):
-            try:
-                user = supabase.auth.sign_in_with_password({"email": email, "password": password})
-                st.write("DEBUG: Login response:", user)
-                if user.session:
-                    st.session_state["user"] = user
-                    st.rerun()
-                else:
-                    st.error("Login failed: No session returned.")
-            except Exception as e:
-                st.error(f"Login error: {e}")
-
-    with tab2:
-        st.subheader("Signup")
-        new_email = st.text_input("Email", key="signup_email")
-        new_password = st.text_input("Password", type="password", key="signup_password")
-        if st.button("Signup"):
-            try:
-                user = supabase.auth.sign_up({"email": new_email, "password": new_password})
-                st.success("Signup successful. Please check your email to confirm.")
-                st.write("DEBUG: Signup response:", user)
-            except Exception as e:
-                st.error(f"Signup error: {e}")
+if __name__ == "__main__":
+    main()
