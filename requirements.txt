@@ -1,4 +1,5 @@
 streamlit
+supabase
 geopy
 pandas
 requests
