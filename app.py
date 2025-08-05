@@ -50,7 +50,9 @@ def post_trip(user_id):
     st.header("Post a Trip")
     start = st.text_input("From (NL location)")
     end = st.text_input("To (NL location)")
-    time = st.datetime_input("Departure Time", value=datetime.datetime.now())
+    date = st.date_input("Departure date", value=datetime.date.today())
+    time = st.time_input("Departure time", value=datetime.datetime.now().time())
+    departure_datetime = datetime.datetime.combine(date, time)
     seats = st.number_input("Available Seats", min_value=1, step=1)
 
     if st.button("Post Trip"):
