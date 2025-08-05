@@ -22,12 +22,11 @@ def login():
             if user.session:
                 st.success("Logged in!")
                 st.session_state["user"] = user
-                st.experimental_rerun()
+                st.experimental_rerun()  # Correct rerun method
             else:
                 st.error("Login failed, email not confirmed or wrong credentials")
         except Exception as e:
             st.error(f"Login error: {e}")
-
 
 def signup():
     st.subheader("Sign up")
@@ -38,7 +37,7 @@ def signup():
             user = supabase.auth.sign_up({"email": email, "password": password})
             st.session_state["user"] = user
             st.success("Signed up! Please check your email.")
-            st.rerun()
+            st.experimental_rerun()  # Correct rerun method
         except Exception as e:
             st.error(f"Signup failed: {e}")
 
@@ -130,7 +129,7 @@ def main():
     elif choice == "Logout":
         st.session_state.clear()
         st.success("Logged out.")
-        st.rerun()
+        st.experimental_rerun()  # Correct rerun method
 
 if __name__ == "__main__":
     main()
