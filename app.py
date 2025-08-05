@@ -51,7 +51,11 @@ def post_trip(user_id):
     start_number = st.text_input("Start House Number")
     end_postcode = st.text_input("End Postal Code")
     end_number = st.text_input("End House Number")
-    departure_time = st.datetime_input("Departure Time", value=datetime.datetime.now())
+
+    today = datetime.date.today()
+    now = datetime.datetime.now().time()
+    date = st.date_input("Departure Date", value=today)
+    time = st.time_input("Departure Time", value=now)
 
     if st.button("Submit Trip"):
         try:
@@ -65,6 +69,8 @@ def post_trip(user_id):
                 st.error("Could not find coordinates for one of the addresses.")
                 return
 
+            departure_datetime = datetime.datetime.combine(date, time)
+
             trip_data = {
                 "user_id": user_id,
                 "start_address": start_address,
@@ -73,13 +79,14 @@ def post_trip(user_id):
                 "end_address": end_address,
                 "end_lat": end_location.latitude,
                 "end_lon": end_location.longitude,
-                "departure_time": departure_time.isoformat(),
+                "departure_time": departure_datetime.isoformat(),
             }
 
             supabase.table("trips").insert(trip_data).execute()
             st.success("Trip posted successfully!")
         except Exception as e:
             st.error(f"Error posting trip: {e}")
+
 
 # --- View Trips ---
 def view_trips():
