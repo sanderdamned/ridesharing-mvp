@@ -8,7 +8,7 @@ SUPABASE_URL = "https://ivzlapmdomoxwzwptixb.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml2emxhcG1kb21veHd6d3B0aXhiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTQzMzA1MDgsImV4cCI6MjA2OTkwNjUwOH0.tgjQ_RBX-62xlJv7RuugHrPuz7XxINHhc2zYF7laMGE"
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-geolocator = Nominatim(user_agent="rideshare-app-nl")
+geolocator = Nominatim(user_agent="rideshare-app-nl", timeout=10)
 
 # --- Auth ---
 def login():
