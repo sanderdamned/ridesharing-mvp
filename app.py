@@ -229,4 +229,14 @@ def main():
 
     elif choice == "Post Passenger Trip":
         if not user:
-            st.warning("You must be logged in to
+            st.warning("You must be logged in to post a passenger trip.")
+        else:
+            post_passenger_trip(user_id=user["id"])
+
+    elif choice == "Logout":
+        st.session_state.clear()
+        st.success("Logged out.")
+        st.experimental_rerun()
+
+if __name__ == "__main__":
+    main()
