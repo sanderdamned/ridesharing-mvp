@@ -52,8 +52,8 @@ def post_trip(user_id):
     end_postcode = st.text_input("End Postal Code")
     end_number = st.text_input("End House Number")
 
-    # Initialize departure_time in session state if not present
-    if "departure_time" not in st.session_state:
+    # Ensure departure_time is a datetime object in session_state
+    if "departure_time" not in st.session_state or not isinstance(st.session_state["departure_time"], datetime.datetime):
         st.session_state["departure_time"] = datetime.datetime.now()
 
     departure_time = st.datetime_input("Departure Time", value=st.session_state["departure_time"])
@@ -91,6 +91,7 @@ def post_trip(user_id):
             st.session_state["departure_time"] = datetime.datetime.now()
         except Exception as e:
             st.error(f"Error posting trip: {e}")
+
 
 # --- View Trips ---
 def view_trips():
