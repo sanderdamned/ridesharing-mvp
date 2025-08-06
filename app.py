@@ -52,23 +52,25 @@ def post_trip(user_id):
     end_postcode = st.text_input("End Postal Code")
     end_number = st.text_input("End House Number")
 
-    # Ensure departure_time is a datetime object in session_state
-    if "departure_time" not in st.session_state or not isinstance(st.session_state["departure_time"], datetime.datetime):
-        st.session_state["departure_time"] = datetime.datetime.now()
+    # Initialize default values
+    if "departure_date" not in st.session_state:
+        st.session_state["departure_date"] = datetime.date.today()
+    if "departure_time" not in st.session_state:
+        st.session_state["departure_time"] = datetime.datetime.now().time()
 
-    departure_time = st.datetime_input("Departure Time", value=st.session_state["departure_time"])
+    # Use supported Streamlit widgets
+    date = st.date_input("Departure Date", value=st.session_state["departure_date"])
+    time = st.time_input("Departure Time", value=st.session_state["departure_time"])
 
-    # Update session_state if changed
-    if departure_time != st.session_state["departure_time"]:
-        st.session_state["departure_time"] = departure_time
+    departure_datetime = datetime.datetime.combine(date, time)
 
     if st.button("Submit Trip"):
         try:
             start_address = f"{start_postcode} {start_number}, Netherlands"
             end_address = f"{end_postcode} {end_number}, Netherlands"
 
-            start_location = geolocator.geocode(start_address)
-            end_location = geolocator.geocode(end_address)
+            start_location = geolocator.geocode(start_address, timeout=5)
+            end_location = geolocator.geocode(end_address, timeout=5)
 
             if not start_location or not end_location:
                 st.error("Could not find coordinates for one of the addresses.")
@@ -82,16 +84,18 @@ def post_trip(user_id):
                 "end_address": end_address,
                 "end_lat": end_location.latitude,
                 "end_lon": end_location.longitude,
-                "departure_time": departure_time.isoformat(),
+                "departure_time": departure_datetime.isoformat(),
             }
 
             supabase.table("trips").insert(trip_data).execute()
             st.success("Trip posted successfully!")
-            # Reset departure_time after successful post
-            st.session_state["departure_time"] = datetime.datetime.now()
+
+            # Reset time
+            st.session_state["departure_date"] = datetime.date.today()
+            st.session_state["departure_time"] = datetime.datetime.now().time()
+
         except Exception as e:
             st.error(f"Error posting trip: {e}")
-
 
 # --- View Trips ---
 def view_trips():
