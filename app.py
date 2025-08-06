@@ -1,3 +1,4 @@
+import sys
 import streamlit as st
 from supabase import create_client
 from geopy.geocoders import Nominatim
@@ -9,6 +10,10 @@ SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 geolocator = Nominatim(user_agent="rideshare-app-nl")
+
+def rerun():
+    # Streamlit Cloud workaround for no experimental_rerun
+    sys.exit()
 
 # --- Auth ---
 def login():
@@ -25,7 +30,7 @@ def login():
                     "email": result.user.email,
                 }
                 st.success("Logged in!")
-                st.experimental_rerun()
+                rerun()   # Use rerun() here instead of st.experimental_rerun()
             else:
                 st.error("Login failed. Email might not be confirmed.")
         except Exception as e:
@@ -236,7 +241,7 @@ def main():
     elif choice == "Logout":
         st.session_state.clear()
         st.success("Logged out.")
-        st.experimental_rerun()
+        rerun()  # rerun after logout to refresh the app
 
 if __name__ == "__main__":
     main()
