@@ -3,9 +3,9 @@ from supabase import create_client
 from geopy.geocoders import Nominatim
 import datetime
 
-# --- Supabase setup ---
-SUPABASE_URL = "https://ivzlapmdomoxwzwptixb.supabase.co"
-SUPABASE_KEY = "your_supabase_key_here"
+# --- Supabase setup using Streamlit secrets ---
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 geolocator = Nominatim(user_agent="rideshare-app-nl")
@@ -229,14 +229,4 @@ def main():
 
     elif choice == "Post Passenger Trip":
         if not user:
-            st.warning("You must be logged in to post a passenger trip.")
-        else:
-            post_passenger_trip(user_id=user["id"])
-
-    elif choice == "Logout":
-        st.session_state.clear()
-        st.success("Logged out.")
-        st.experimental_rerun()
-
-if __name__ == "__main__":
-    main()
+            st.warning("You must be logged in to
