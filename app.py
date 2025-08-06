@@ -25,7 +25,7 @@ def login():
                     "email": result.user.email,
                 }
                 st.success("Logged in!")
-                st.rerun()
+                st.experimental_rerun()
             else:
                 st.error("Login failed. Email might not be confirmed.")
         except Exception as e:
@@ -44,23 +44,34 @@ def signup():
             st.error(f"Signup failed: {e}")
 
 # --- Post Trip ---
-def post_trip(user_id):
+def post_trip():
     st.subheader("Post a Trip")
+
+    # Get current authenticated user from Supabase
+    user = supabase.auth.get_user()
+    if not user or not user.user:
+        st.error("User session not found. Please log in again.")
+        return
+
+    user_id = user.user.id
 
     start_postcode = st.text_input("Start Postal Code")
     start_number = st.text_input("Start House Number")
     end_postcode = st.text_input("End Postal Code")
     end_number = st.text_input("End House Number")
 
-    # Initialize default values
+    # Initialize default values in session state
     if "departure_date" not in st.session_state:
         st.session_state["departure_date"] = datetime.date.today()
     if "departure_time" not in st.session_state:
         st.session_state["departure_time"] = datetime.datetime.now().time()
 
-    # Use supported Streamlit widgets
     date = st.date_input("Departure Date", value=st.session_state["departure_date"])
     time = st.time_input("Departure Time", value=st.session_state["departure_time"])
+
+    # Update session state to keep values persistent
+    st.session_state["departure_date"] = date
+    st.session_state["departure_time"] = time
 
     departure_datetime = datetime.datetime.combine(date, time)
 
@@ -90,7 +101,7 @@ def post_trip(user_id):
             supabase.table("trips").insert(trip_data).execute()
             st.success("Trip posted successfully!")
 
-            # Reset time
+            # Reset departure datetime in session state
             st.session_state["departure_date"] = datetime.date.today()
             st.session_state["departure_time"] = datetime.datetime.now().time()
 
@@ -143,12 +154,12 @@ def main():
         if not user:
             st.warning("You must be logged in to post a trip.")
         else:
-            post_trip(user_id=user["id"])
+            post_trip()  # no user_id argument anymore
 
     elif choice == "Logout":
         st.session_state.clear()
         st.success("Logged out.")
-        st.rerun()
+        st.experimental_rerun()
 
 if __name__ == "__main__":
     main()
