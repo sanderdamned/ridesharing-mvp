@@ -5,16 +5,10 @@ import datetime
 
 # --- Supabase setup ---
 SUPABASE_URL = "https://ivzlapmdomoxwzwptixb.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml2emxhcG1kb21veHd6d3B0aXhiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTQzMzA1MDgsImV4cCI6MjA2OTkwNjUwOH0.tgjQ_RBX-62xlJv7RuugHrPuz7XxINHhc2zYF7laMGE"
+SUPABASE_KEY = "your_supabase_key_here"
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 geolocator = Nominatim(user_agent="rideshare-app-nl")
-
-def safe_rerun():
-    try:
-        st.experimental_rerun()
-    except AttributeError:
-        st.stop()
 
 # --- Auth ---
 def login():
@@ -31,7 +25,7 @@ def login():
                     "email": result.user.email,
                 }
                 st.success("Logged in!")
-                safe_rerun()
+                st.experimental_rerun()
             else:
                 st.error("Login failed. Email might not be confirmed.")
         except Exception as e:
@@ -49,28 +43,26 @@ def signup():
         except Exception as e:
             st.error(f"Signup failed: {e}")
 
-# --- Post Trip ---
-def post_trip(user_id):
-    st.subheader("Post a Trip")
+# --- Post Rider Trip ---
+def post_rider_trip(user_id):
+    st.subheader("Post a Rider Trip (Offer a Ride)")
 
-    start_postcode = st.text_input("Start Postal Code")
-    start_number = st.text_input("Start House Number")
-    end_postcode = st.text_input("End Postal Code")
-    end_number = st.text_input("End House Number")
+    start_postcode = st.text_input("Start Postal Code", key="rider_start_postcode")
+    start_number = st.text_input("Start House Number", key="rider_start_number")
+    end_postcode = st.text_input("End Postal Code", key="rider_end_postcode")
+    end_number = st.text_input("End House Number", key="rider_end_number")
 
-    # Initialize default values
-    if "departure_date" not in st.session_state:
-        st.session_state["departure_date"] = datetime.date.today()
-    if "departure_time" not in st.session_state:
-        st.session_state["departure_time"] = datetime.datetime.now().time()
+    if "rider_departure_date" not in st.session_state:
+        st.session_state["rider_departure_date"] = datetime.date.today()
+    if "rider_departure_time" not in st.session_state:
+        st.session_state["rider_departure_time"] = datetime.datetime.now().time()
 
-    # Use supported Streamlit widgets
-    date = st.date_input("Departure Date", value=st.session_state["departure_date"])
-    time = st.time_input("Departure Time", value=st.session_state["departure_time"])
+    date = st.date_input("Departure Date", value=st.session_state["rider_departure_date"], key="rider_date")
+    time = st.time_input("Departure Time", value=st.session_state["rider_departure_time"], key="rider_time")
 
     departure_datetime = datetime.datetime.combine(date, time)
 
-    if st.button("Submit Trip"):
+    if st.button("Submit Rider Trip"):
         try:
             start_address = f"{start_postcode} {start_number}, Netherlands"
             end_address = f"{end_postcode} {end_number}, Netherlands"
@@ -94,24 +86,76 @@ def post_trip(user_id):
             }
 
             supabase.table("trips").insert(trip_data).execute()
-            st.success("Trip posted successfully!")
+            st.success("Rider trip posted successfully!")
 
-            # Reset time
-            st.session_state["departure_date"] = datetime.date.today()
-            st.session_state["departure_time"] = datetime.datetime.now().time()
+            # Reset session state
+            st.session_state["rider_departure_date"] = datetime.date.today()
+            st.session_state["rider_departure_time"] = datetime.datetime.now().time()
 
         except Exception as e:
-            st.error(f"Error posting trip: {e}")
+            st.error(f"Error posting rider trip: {e}")
 
-# --- View Trips ---
-def view_trips():
-    st.subheader("Available Trips")
+# --- Post Passenger Trip ---
+def post_passenger_trip(user_id):
+    st.subheader("Post a Passenger Trip (Request a Ride)")
+
+    pickup_postcode = st.text_input("Pickup Postal Code", key="passenger_pickup_postcode")
+    pickup_number = st.text_input("Pickup House Number", key="passenger_pickup_number")
+    dropoff_postcode = st.text_input("Dropoff Postal Code", key="passenger_dropoff_postcode")
+    dropoff_number = st.text_input("Dropoff House Number", key="passenger_dropoff_number")
+
+    if "passenger_departure_date" not in st.session_state:
+        st.session_state["passenger_departure_date"] = datetime.date.today()
+    if "passenger_departure_time" not in st.session_state:
+        st.session_state["passenger_departure_time"] = datetime.datetime.now().time()
+
+    date = st.date_input("Desired Pickup Date", value=st.session_state["passenger_departure_date"], key="passenger_date")
+    time = st.time_input("Desired Pickup Time", value=st.session_state["passenger_departure_time"], key="passenger_time")
+
+    departure_datetime = datetime.datetime.combine(date, time)
+
+    if st.button("Submit Passenger Trip"):
+        try:
+            pickup_address = f"{pickup_postcode} {pickup_number}, Netherlands"
+            dropoff_address = f"{dropoff_postcode} {dropoff_number}, Netherlands"
+
+            pickup_location = geolocator.geocode(pickup_address, timeout=5)
+            dropoff_location = geolocator.geocode(dropoff_address, timeout=5)
+
+            if not pickup_location or not dropoff_location:
+                st.error("Could not find coordinates for one of the addresses.")
+                return
+
+            passenger_trip_data = {
+                "user_id": user_id,
+                "pickup_address": pickup_address,
+                "pickup_lat": pickup_location.latitude,
+                "pickup_lon": pickup_location.longitude,
+                "dropoff_address": dropoff_address,
+                "dropoff_lat": dropoff_location.latitude,
+                "dropoff_lon": dropoff_location.longitude,
+                "desired_pickup_time": departure_datetime.isoformat(),
+            }
+
+            supabase.table("passenger_trips").insert(passenger_trip_data).execute()
+            st.success("Passenger trip posted successfully!")
+
+            # Reset session state
+            st.session_state["passenger_departure_date"] = datetime.date.today()
+            st.session_state["passenger_departure_time"] = datetime.datetime.now().time()
+
+        except Exception as e:
+            st.error(f"Error posting passenger trip: {e}")
+
+# --- View Rider Trips ---
+def view_rider_trips():
+    st.subheader("Available Rider Trips (Offers)")
     try:
         response = supabase.table("trips").select("*").order("departure_time").execute()
         trips = response.data
 
         if not trips:
-            st.info("No trips available.")
+            st.info("No rider trips available.")
             return
 
         for trip in trips:
@@ -122,13 +166,42 @@ def view_trips():
             """)
             st.markdown("---")
     except Exception as e:
-        st.error(f"Failed to load trips: {e}")
+        st.error(f"Failed to load rider trips: {e}")
+
+# --- View Passenger Trips ---
+def view_passenger_trips():
+    st.subheader("Available Passenger Trips (Requests)")
+    try:
+        response = supabase.table("passenger_trips").select("*").order("desired_pickup_time").execute()
+        trips = response.data
+
+        if not trips:
+            st.info("No passenger trips available.")
+            return
+
+        for trip in trips:
+            st.markdown(f"""
+            **Pickup:** {trip['pickup_address']}  
+            **Dropoff:** {trip['dropoff_address']}  
+            **Desired Pickup:** {trip['desired_pickup_time']}
+            """)
+            st.markdown("---")
+    except Exception as e:
+        st.error(f"Failed to load passenger trips: {e}")
 
 # --- Main App ---
 def main():
     st.title("🚗 Dutch Ridesharing Platform")
 
-    menu = ["Login", "Sign Up", "View Trips", "Post Trip", "Logout"]
+    menu = [
+        "Login",
+        "Sign Up",
+        "View Rider Trips",
+        "Post Rider Trip",
+        "View Passenger Trips",
+        "Post Passenger Trip",
+        "Logout"
+    ]
     choice = st.sidebar.selectbox("Menu", menu)
 
     user = st.session_state.get("user")
@@ -142,19 +215,28 @@ def main():
     elif choice == "Sign Up":
         signup()
 
-    elif choice == "View Trips":
-        view_trips()
+    elif choice == "View Rider Trips":
+        view_rider_trips()
 
-    elif choice == "Post Trip":
+    elif choice == "Post Rider Trip":
         if not user:
-            st.warning("You must be logged in to post a trip.")
+            st.warning("You must be logged in to post a rider trip.")
         else:
-            post_trip(user_id=user["id"])
+            post_rider_trip(user_id=user["id"])
+
+    elif choice == "View Passenger Trips":
+        view_passenger_trips()
+
+    elif choice == "Post Passenger Trip":
+        if not user:
+            st.warning("You must be logged in to post a passenger trip.")
+        else:
+            post_passenger_trip(user_id=user["id"])
 
     elif choice == "Logout":
         st.session_state.clear()
         st.success("Logged out.")
-        safe_rerun()
+        st.experimental_rerun()
 
 if __name__ == "__main__":
     main()
