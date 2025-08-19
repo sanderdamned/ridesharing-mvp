@@ -3,3 +3,5 @@ supabase
 geopy
 pandas
 requests
+shapely>=2.0
+pyproj>=3.6
