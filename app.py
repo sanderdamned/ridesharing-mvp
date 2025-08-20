@@ -302,7 +302,7 @@ if not st.session_state.user:
     st.stop()
 
 # sidebar
-st.sidebar.write(f"Logged in as **{st.session_state.user.email}**")
+st.sidebar.write(f"Logged in as **{st.session_state.user['email']}**")
 if st.sidebar.button("Log out"):
     supabase.auth.sign_out()
     st.session_state.user = None
