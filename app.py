@@ -21,6 +21,15 @@ if "user" not in st.session_state:
     st.session_state.user = None
 
 # ================== AUTH ==================
+def normalize_user(user_obj):
+    """Return a safe dict with id and email"""
+    if user_obj is None:
+        return None
+    return {
+        "id": getattr(user_obj, "id", None),
+        "email": getattr(user_obj, "email", None)
+    }
+
 def login():
     st.title("Login or Register")
     email = st.text_input("Email")
@@ -30,14 +39,30 @@ def login():
     if st.button(action):
         try:
             if action == "Login":
-                user = supabase.auth.sign_in_with_password({"email": email, "password": password})
+                user_response = supabase.auth.sign_in_with_password({
+                    "email": email,
+                    "password": password
+                })
             else:
-                user = supabase.auth.sign_up({"email": email, "password": password})
-            st.session_state.user = user.user
-            st.success(f"{action} successful!")
-            st.rerun()
+                user_response = supabase.auth.sign_up({
+                    "email": email,
+                    "password": password
+                })
+
+            # normalize user object to a dict with id/email
+            st.session_state.user = normalize_user(user_response.user)
+
+            if st.session_state.user["id"] is not None:
+                st.success(f"{action} successful!")
+                st.rerun()
+            else:
+                st.error(f"{action} failed. Check credentials.")
         except Exception as e:
             st.error(f"Error: {e}")
+
+# Initialize user session if missing
+if "user" not in st.session_state:
+    st.session_state.user = None
 
 if not st.session_state.user:
     login()
@@ -45,16 +70,20 @@ if not st.session_state.user:
 
 # ================== SIDEBAR ==================
 if st.session_state.user:
-    email = getattr(st.session_state.user, "email", None)
+    email = st.session_state.user.get("email")
     if email:
         st.sidebar.title(f"Welcome, {email}")
 
     if st.sidebar.button("Log out"):
-        supabase.auth.sign_out()
+        try:
+            supabase.auth.sign_out()
+        except Exception:
+            pass
         st.session_state.user = None
         st.rerun()
 
 view = st.sidebar.radio("Go to", ["Post Ride", "Post Passenger", "Find Matches"])
+
 
 # ================== HELPERS ==================
 def geocode_postcode(postcode: str):
