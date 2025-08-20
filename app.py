@@ -45,7 +45,10 @@ if not st.session_state.user:
 
 # ================== SIDEBAR ==================
 if st.session_state.user:
-    st.sidebar.title(f"Welcome, {st.session_state.user['email']}")
+    email = getattr(st.session_state.user, "email", None)
+    if email:
+        st.sidebar.title(f"Welcome, {email}")
+
     if st.sidebar.button("Log out"):
         supabase.auth.sign_out()
         st.session_state.user = None
