@@ -1,18 +1,16 @@
 import streamlit as st
-from nhost_py import NhostClient
 import requests
 from datetime import datetime, time
 from functools import lru_cache
 import math
 import time as pytime
 
-
 # ===========================
 # CONFIG / INIT
 # ===========================
 st.set_page_config(page_title="Ridesharing MVP", layout="centered")
 
-NHOST_URL = st.secrets.get("NHOST_URL")
+NHOST_URL = st.secrets.get("NHOST_URL")  # e.g., https://xxxx.nhost.app
 NHOST_KEY = st.secrets.get("NHOST_ADMIN_SECRET")
 ORS_API_KEY = st.secrets.get("ORS_API_KEY")  # optional
 
@@ -20,7 +18,8 @@ if not NHOST_URL or not NHOST_KEY:
     st.error("Missing Nhost secrets. Add NHOST_URL and NHOST_ADMIN_SECRET in Streamlit Cloud Secrets.")
     st.stop()
 
-nhost = NhostClient(endpoint=NHOST_URL, admin_secret=NHOST_KEY)
+GRAPHQL_URL = f"{NHOST_URL}/v1/graphql"
+AUTH_URL = f"{NHOST_URL}/v1/auth"
 
 # ===========================
 # HELPERS
@@ -81,16 +80,48 @@ def haversine_km(a, b):
     return 2 * R * math.asin(math.sqrt(h))
 
 # ===========================
-# AUTH
+# NHOST AUTH / GRAPHQL
+# ===========================
+def nhost_sign_up(email, password):
+    url = f"{AUTH_URL}/signup/email-password"
+    r = requests.post(url, json={"email": email, "password": password})
+    r.raise_for_status()
+    return r.json()
+
+def nhost_sign_in(email, password):
+    url = f"{AUTH_URL}/signin/email-password"
+    r = requests.post(url, json={"email": email, "password": password})
+    r.raise_for_status()
+    return r.json()
+
+def nhost_sign_out(refresh_token):
+    url = f"{AUTH_URL}/signout"
+    headers = {"Authorization": f"Bearer {refresh_token}"}
+    r = requests.post(url, headers=headers)
+    return r.ok
+
+def nhost_graphql(query, variables=None, admin_secret=None):
+    headers = {"x-hasura-admin-secret": admin_secret} if admin_secret else {}
+    json_payload = {"query": query}
+    if variables:
+        json_payload["variables"] = variables
+    r = requests.post(GRAPHQL_URL, json=json_payload, headers=headers)
+    r.raise_for_status()
+    return r.json()
+
+# ===========================
+# SESSION
 # ===========================
 if "user" not in st.session_state:
     st.session_state.user = None
+if "access_token" not in st.session_state:
+    st.session_state.access_token = None
 
 def normalize_user(user_obj):
     if not user_obj:
         return None
-    uid = getattr(user_obj, "id", None) or user_obj.get("id")
-    email = getattr(user_obj, "email", None) or user_obj.get("email")
+    uid = user_obj.get("id")
+    email = user_obj.get("email")
     return {"id": uid, "email": email}
 
 def show_login():
@@ -101,16 +132,19 @@ def show_login():
     if st.button(action):
         try:
             if action == "Login":
-                resp = nhost.auth.sign_in_with_password({"email": email, "password": password})
+                resp = nhost_sign_in(email, password)
+                user = resp.get("user")
+                st.session_state.access_token = resp.get("session", {}).get("access_token")
             else:
-                resp = nhost.auth.sign_up({"email": email, "password": password})
-            user = resp.user if hasattr(resp, "user") else resp.get("user")
+                resp = nhost_sign_up(email, password)
+                user = resp.get("user")
+                st.success("Registration successful. Please log in.")
+                return
             st.session_state.user = normalize_user(user)
             if st.session_state.user:
-                st.success(f"{action} successful!")
                 st.experimental_rerun()
             else:
-                st.error(f"{action} failed. Check credentials.")
+                st.error("Auth failed. Check credentials.")
         except Exception as e:
             st.error(f"Auth error: {e}")
 
@@ -141,10 +175,10 @@ def insert_table_row(table_name: str, payload: dict):
     }}
     """
     try:
-        res = nhost.graphql.query(query)
-        if res.errors:
-            raise Exception(res.errors)
-        return res.data
+        res = nhost_graphql(query, admin_secret=NHOST_KEY)
+        if "errors" in res:
+            raise Exception(res["errors"])
+        return res.get("data")
     except Exception as e:
         st.error(f"Insert error: {e}")
         return None
@@ -159,8 +193,8 @@ def get_rides():
     }
     """
     try:
-        res = nhost.graphql.query(query)
-        return res.data.get("rides", [])
+        res = nhost_graphql(query, admin_secret=NHOST_KEY)
+        return res.get("data", {}).get("rides", [])
     except Exception as e:
         st.error(f"Failed fetching rides: {e}")
         return []
@@ -176,8 +210,8 @@ def get_passengers(user_id=None):
     }}
     """
     try:
-        res = nhost.graphql.query(query)
-        return res.data.get("passengers", [])
+        res = nhost_graphql(query, admin_secret=NHOST_KEY)
+        return res.get("data", {}).get("passengers", [])
     except Exception as e:
         st.error(f"Failed fetching passengers: {e}")
         return []
@@ -187,9 +221,8 @@ def get_passengers(user_id=None):
 # ===========================
 st.sidebar.title(f"Welcome, {st.session_state.user.get('email')}")
 if st.sidebar.button("Log out"):
-    try: nhost.auth.sign_out()
-    except: pass
     st.session_state.user = None
+    st.session_state.access_token = None
     st.experimental_rerun()
 
 view = st.sidebar.radio("Go to", ["Post Ride", "Post Passenger", "Find Matches", "Debug"])
@@ -245,7 +278,6 @@ elif view == "Post Passenger":
         }
         res = insert_table_row("passengers", payload)
         if res: st.success("Passenger request posted!")
-
 
 # ---------- Find Matches ----------
 elif view == "Find Matches":
