@@ -1,5 +1,5 @@
 import streamlit as st
-from nhost import NhostClient
+from nhost_py import NhostClient
 import requests
 from datetime import datetime, time
 from functools import lru_cache
