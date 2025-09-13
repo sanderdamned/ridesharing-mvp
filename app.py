@@ -129,19 +129,15 @@ if not st.session_state.user:
 # ===========================
 # DB HELPERS
 # ===========================
-def insert_table_row(table_name: str, payload: dict):
-    # Convert Python float lists to GraphQL array string
-    def format_array(arr):
-        return f"[{','.join(str(x) for x in arr)}]" if arr else "[]"
+def format_array(arr):
+    return f"[{','.join(str(x) for x in arr)}]" if arr else "[]"
 
+def insert_table_row(table_name: str, payload: dict):
     payload_copy = payload.copy()
     for key in ["origin_coords", "dest_coords"]:
-        if key in payload_copy and payload_copy[key]:
+        if key in payload_copy:
             payload_copy[key] = format_array(payload_copy[key])
-        else:
-            payload_copy[key] = "[]"
-
-    fields = ", ".join(f"{k}: {v if isinstance(v, (int, float)) else f'\"{v}\"'}" for k,v in payload_copy.items())
+    fields = ", ".join(f"{k}: {v if isinstance(v,(int,float)) else f'\"{v}\"'}" for k,v in payload_copy.items())
     query = f"""
     mutation {{
         insert_{table_name}(objects: {{ {fields} }}) {{
@@ -213,7 +209,6 @@ if view == "Post Ride":
         max_extra_km = st.number_input("Max extra distance (km)", 0.0, 100.0, 5.0, step=0.5)
         max_extra_min = st.number_input("Max extra time (minutes)", 0, 240, 15, step=5)
         submit = st.form_submit_button("Submit Ride")
-
     if submit:
         origin_coords = geocode_postcode_cached(origin) if ORS_API_KEY else []
         dest_coords = geocode_postcode_cached(destination) if ORS_API_KEY else []
@@ -239,7 +234,6 @@ elif view == "Post Passenger":
         destination = st.text_input("Destination Postcode (NL)")
         departure = st.time_input("Departure Time", value=datetime.now().time())
         submit = st.form_submit_button("Submit Request")
-
     if submit:
         origin_coords = geocode_postcode_cached(origin) if ORS_API_KEY else []
         dest_coords = geocode_postcode_cached(destination) if ORS_API_KEY else []
@@ -284,4 +278,14 @@ elif view == "Find Matches":
         if matches:
             st.subheader("Matching Rides:")
             for ride, ex_d in matches:
-                st.write(f"
+                st.write(f"🚗 {ride.get('origin')} → {ride.get('destination')} at {ride.get('departure')}")
+                st.write(f"   Extra distance: {ex_d:.1f} km (max {ride.get('max_extra_km')})")
+        else:
+            st.warning("No suitable matches found.")
+
+# ---------- Debug ----------
+elif view == "Debug":
+    st.title("Debug Info")
+    st.json(st.session_state.user)
+    if st.button("List rides"): st.json(get_rides())
+    if st.button("List my passengers"): st.json(get_passengers(st.session_state.user["id"]))
