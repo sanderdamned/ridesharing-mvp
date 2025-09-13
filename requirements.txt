@@ -1,16 +1,9 @@
-# Core
 streamlit>=1.30.0,<2.0
 requests>=2.31.0,<3.0
 pandas>=2.0.3,<3.0
-
-# Nhost SDK (correct PyPI package)
 nhost>=1.1.0,<2.0
-
-# Geocoding / GIS
 geopy>=2.3.0,<3.0
 shapely>=2.0.1,<3.0
 pyproj>=3.6.0,<4.0
-
-# Utilities
 lxml>=4.9.3,<5.0
 numpy>=1.26.0,<2.0
