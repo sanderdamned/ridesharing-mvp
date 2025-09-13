@@ -1,7 +1,7 @@
 streamlit>=1.30.0
-supabase
-geopy
-pandas
+nhost
 requests
+pandas
+geopy
 shapely>=2.0
 pyproj>=3.6
