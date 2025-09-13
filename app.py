@@ -13,23 +13,16 @@ st.set_page_config(page_title="Ridesharing MVP", layout="centered")
 
 NHOST_URL = st.secrets.get("NHOST_URL")
 NHOST_KEY = st.secrets.get("NHOST_KEY")
-ORS_API_KEY = st.secrets.get("ORS_API_KEY")  # optional but recommended
+ORS_API_KEY = st.secrets.get("ORS_API_KEY")  # optional
 
 if not NHOST_URL or not NHOST_KEY:
-    st.error(
-        "Missing Nhost secrets. Add NHOST_URL and NHOST_KEY in Streamlit Cloud Secrets."
-    )
+    st.error("Missing Nhost secrets. Add NHOST_URL and NHOST_KEY.")
     st.stop()
 
-# Create Nhost client
-try:
-    nhost = NhostClient(endpoint=NHOST_URL, admin_secret=NHOST_KEY)
-except Exception as e:
-    st.error(f"Failed to create Nhost client: {e}")
-    st.stop()
+nhost = NhostClient(endpoint=NHOST_URL, admin_secret=NHOST_KEY)
 
 # ===========================
-# HELPERS / UTILITIES
+# HELPERS
 # ===========================
 def format_departure(dep):
     if isinstance(dep, time):
@@ -104,12 +97,9 @@ if "user" not in st.session_state:
 def normalize_user(user_obj):
     if not user_obj:
         return None
-    try:
-        uid = getattr(user_obj, "id", None) or user_obj.get("id")
-        email = getattr(user_obj, "email", None) or user_obj.get("email")
-        return {"id": uid, "email": email}
-    except Exception:
-        return None
+    uid = getattr(user_obj, "id", None) or user_obj.get("id")
+    email = getattr(user_obj, "email", None) or user_obj.get("email")
+    return {"id": uid, "email": email}
 
 def show_login():
     st.title("Login or Register")
@@ -126,7 +116,7 @@ def show_login():
             st.session_state.user = normalize_user(user)
             if st.session_state.user:
                 st.success(f"{action} successful!")
-                st.rerun()
+                st.experimental_rerun()
             else:
                 st.error(f"{action} failed. Check credentials.")
         except Exception as e:
@@ -140,16 +130,27 @@ if not st.session_state.user:
 # DB HELPERS
 # ===========================
 def insert_table_row(table_name: str, payload: dict):
+    # Convert Python float lists to GraphQL array string
+    def format_array(arr):
+        return f"[{','.join(str(x) for x in arr)}]" if arr else "[]"
+
+    payload_copy = payload.copy()
+    for key in ["origin_coords", "dest_coords"]:
+        if key in payload_copy and payload_copy[key]:
+            payload_copy[key] = format_array(payload_copy[key])
+        else:
+            payload_copy[key] = "[]"
+
+    fields = ", ".join(f"{k}: {v if isinstance(v, (int, float)) else f'\"{v}\"'}" for k,v in payload_copy.items())
+    query = f"""
+    mutation {{
+        insert_{table_name}(objects: {{ {fields} }}) {{
+            returning {{ id }}
+        }}
+    }}
+    """
     try:
-        res = nhost.graphql.query(f"""
-            mutation {{
-                insert_{table_name}(objects: [{payload}]) {{
-                    returning {{
-                        id
-                    }}
-                }}
-            }}
-        """)
+        res = nhost.graphql.query(query)
         if res.errors:
             raise Exception(res.errors)
         return res.data
@@ -158,42 +159,33 @@ def insert_table_row(table_name: str, payload: dict):
         return None
 
 def get_rides():
+    query = """
+    query {
+        rides {
+            id user_id origin destination departure
+            origin_coords dest_coords max_extra_km max_extra_min
+        }
+    }
+    """
     try:
-        res = nhost.graphql.query("""
-            query {
-                rides {
-                    id
-                    user_id
-                    origin
-                    destination
-                    departure
-                    origin_coords
-                    dest_coords
-                    max_extra_km
-                    max_extra_min
-                }
-            }
-        """)
+        res = nhost.graphql.query(query)
         return res.data.get("rides", [])
     except Exception as e:
         st.error(f"Failed fetching rides: {e}")
         return []
 
 def get_passengers(user_id=None):
+    where_clause = f'(where: {{user_id: {{_eq: "{user_id}"}}}})' if user_id else ""
+    query = f"""
+    query {{
+        passengers{where_clause} {{
+            id user_id origin destination departure
+            origin_coords dest_coords
+        }}
+    }}
+    """
     try:
-        res = nhost.graphql.query(f"""
-            query {{
-                passengers(where: {{user_id: {{_eq: "{user_id}"}}}}) {{
-                    id
-                    user_id
-                    origin
-                    destination
-                    departure
-                    origin_coords
-                    dest_coords
-                }}
-            }}
-        """)
+        res = nhost.graphql.query(query)
         return res.data.get("passengers", [])
     except Exception as e:
         st.error(f"Failed fetching passengers: {e}")
@@ -204,12 +196,10 @@ def get_passengers(user_id=None):
 # ===========================
 st.sidebar.title(f"Welcome, {st.session_state.user.get('email')}")
 if st.sidebar.button("Log out"):
-    try:
-        nhost.auth.sign_out()
-    except Exception:
-        pass
+    try: nhost.auth.sign_out()
+    except: pass
     st.session_state.user = None
-    st.rerun()
+    st.experimental_rerun()
 
 view = st.sidebar.radio("Go to", ["Post Ride", "Post Passenger", "Find Matches", "Debug"])
 
@@ -225,22 +215,21 @@ if view == "Post Ride":
         submit = st.form_submit_button("Submit Ride")
 
     if submit:
-        origin_coords = geocode_postcode_cached(origin) if ORS_API_KEY else None
-        dest_coords = geocode_postcode_cached(destination) if ORS_API_KEY else None
+        origin_coords = geocode_postcode_cached(origin) if ORS_API_KEY else []
+        dest_coords = geocode_postcode_cached(destination) if ORS_API_KEY else []
         payload = {
             "user_id": st.session_state.user["id"],
             "origin": origin.strip().upper(),
             "destination": destination.strip().upper(),
             "departure": format_departure(departure),
-            "origin_coords": origin_coords or [],
-            "dest_coords": dest_coords or [],
+            "origin_coords": origin_coords,
+            "dest_coords": dest_coords,
             "max_extra_km": float(max_extra_km),
             "max_extra_min": int(max_extra_min),
             "created_at": datetime.utcnow().isoformat(),
         }
         res = insert_table_row("rides", payload)
-        if res:
-            st.success("Ride posted!")
+        if res: st.success("Ride posted!")
 
 # ---------- Post Passenger ----------
 elif view == "Post Passenger":
@@ -252,20 +241,19 @@ elif view == "Post Passenger":
         submit = st.form_submit_button("Submit Request")
 
     if submit:
-        origin_coords = geocode_postcode_cached(origin) if ORS_API_KEY else None
-        dest_coords = geocode_postcode_cached(destination) if ORS_API_KEY else None
+        origin_coords = geocode_postcode_cached(origin) if ORS_API_KEY else []
+        dest_coords = geocode_postcode_cached(destination) if ORS_API_KEY else []
         payload = {
             "user_id": st.session_state.user["id"],
             "origin": origin.strip().upper(),
             "destination": destination.strip().upper(),
             "departure": format_departure(departure),
-            "origin_coords": origin_coords or [],
-            "dest_coords": dest_coords or [],
+            "origin_coords": origin_coords,
+            "dest_coords": dest_coords,
             "created_at": datetime.utcnow().isoformat(),
         }
         res = insert_table_row("passengers", payload)
-        if res:
-            st.success("Passenger request posted!")
+        if res: st.success("Passenger request posted!")
 
 # ---------- Find Matches ----------
 elif view == "Find Matches":
@@ -285,6 +273,15 @@ elif view == "Find Matches":
             if base_dist is None:
                 continue
             d1, _ = route_distance_time(ride["origin_coords"], passenger["origin_coords"])
-            d2, _ = route_distance_time(passenger["origin_coords"], passenger["dest_coords
-::contentReference[oaicite:0]{index=0}
- 
+            d2, _ = route_distance_time(passenger["origin_coords"], passenger["dest_coords"])
+            d3, _ = route_distance_time(passenger["dest_coords"], ride["dest_coords"])
+            if None in (d1, d2, d3):
+                continue
+            detour_dist = d1 + d2 + d3
+            extra_dist = detour_dist - base_dist
+            if extra_dist <= ride.get("max_extra_km", 999):
+                matches.append((ride, extra_dist))
+        if matches:
+            st.subheader("Matching Rides:")
+            for ride, ex_d in matches:
+                st.write(f"
