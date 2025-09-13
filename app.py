@@ -1,7 +1,6 @@
 import streamlit as st
 from supabase import create_client, Client
-import pandas as pd
-from datetime import datetime
+from datetime import datetime, time
 import requests
 
 # ================== CONFIG ==================
@@ -17,7 +16,7 @@ ORS_API_KEY = st.secrets.get("ORS_API_KEY", None)
 
 # ================== SESSION STATE INIT ==================
 if "user" not in st.session_state:
-    st.session_state.user = None   # Always None or dict with id/email
+    st.session_state.user = None  # Always None or dict with id/email
 
 # ================== HELPERS ==================
 def normalize_user(user_obj):
@@ -41,7 +40,7 @@ def geocode_postcode(postcode: str):
     data = r.json()
     try:
         coords = data["features"][0]["geometry"]["coordinates"]  # [lon, lat]
-        return coords[::-1]  # return [lat, lon]
+        return [float(coords[1]), float(coords[0])]  # return [lat, lon] as float list
     except Exception:
         return None
 
@@ -79,7 +78,6 @@ def login():
                     "password": password
                 })
 
-            # normalize user object
             st.session_state.user = normalize_user(user_response.user)
 
             if st.session_state.user:
@@ -111,13 +109,14 @@ if st.sidebar.button("Log out"):
 view = st.sidebar.radio("Go to", ["Post Ride", "Post Passenger", "Find Matches"])
 
 # ================== VIEWS ==================
+# --- POST RIDE ---
 if view == "Post Ride":
     st.title("Post a Ride (Driver)")
 
     with st.form("ride_form"):
         origin = st.text_input("Origin Postcode")
         destination = st.text_input("Destination Postcode")
-        departure = st.time_input("Departure Time")
+        departure = st.time_input("Departure Time", value=time(9, 0))
         max_extra_km = st.number_input("Max extra distance (km)", 0.0, 20.0, 2.0, step=0.5)
         max_extra_min = st.number_input("Max extra time (minutes)", 0, 120, 15, step=5)
         submit = st.form_submit_button("Submit Ride")
@@ -135,9 +134,9 @@ if view == "Post Ride":
                     "user_id": st.session_state.user["id"],
                     "origin": origin,
                     "destination": destination,
-                    "departure": str(departure),
-                    "origin_coords": f'{{{origin_coords[0]}, {origin_coords[1]}}}',
-                    "dest_coords": f'{{{dest_coords[0]}, {dest_coords[1]}}}',
+                    "departure": departure.strftime("%H:%M:%S"),  # ensure HH:MM:SS
+                    "origin_coords": origin_coords,  # float8[]
+                    "dest_coords": dest_coords,      # float8[]
                     "max_extra_km": float(max_extra_km),
                     "max_extra_min": int(max_extra_min),
                 }
@@ -145,13 +144,14 @@ if view == "Post Ride":
                 supabase.table("rides").insert(payload).execute()
                 st.success("Ride posted!")
 
+# --- POST PASSENGER ---
 elif view == "Post Passenger":
     st.title("Post a Passenger Request")
 
     with st.form("passenger_form"):
         origin = st.text_input("Origin Postcode")
         destination = st.text_input("Destination Postcode")
-        departure = st.time_input("Departure Time")
+        departure = st.time_input("Departure Time", value=time(9, 0))
         submit = st.form_submit_button("Submit Request")
 
     if submit:
@@ -167,15 +167,15 @@ elif view == "Post Passenger":
                     "user_id": st.session_state.user["id"],
                     "origin": origin,
                     "destination": destination,
-                    "departure": str(departure),
-                    "origin_coords": f'{{{origin_coords[0]}, {origin_coords[1]}}}',
-                    "dest_coords": f'{{{dest_coords[0]}, {dest_coords[1]}}}',
+                    "departure": departure.strftime("%H:%M:%S"),  # HH:MM:SS
+                    "origin_coords": origin_coords,
+                    "dest_coords": dest_coords,
                 }
                 st.write("DEBUG payload:", payload)
                 supabase.table("passengers").insert(payload).execute()
                 st.success("Passenger request posted!")
 
-
+# --- FIND MATCHES ---
 elif view == "Find Matches":
     st.title("Find Matches (Detour-based)")
 
