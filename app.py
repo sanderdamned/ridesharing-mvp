@@ -122,29 +122,28 @@ if view == "Post Ride":
         max_extra_min = st.number_input("Max extra time (minutes)", 0, 120, 15, step=5)
         submit = st.form_submit_button("Submit Ride")
 
-if submit:
-    if not st.session_state.user or not st.session_state.user.get("id"):
-        st.error("You must be logged in to post a ride.")
-    else:
-        origin_coords = geocode_postcode(origin)
-        dest_coords = geocode_postcode(destination)
-        if not origin_coords or not dest_coords:
-            st.error("Invalid origin or destination postcode")
+    if submit:
+        if not st.session_state.user or not st.session_state.user.get("id"):
+            st.error("You must be logged in to post a ride.")
         else:
-            # Explicitly convert coordinates to float for Postgres float8[]
-            payload = {
-                "user_id": st.session_state.user["id"],
-                "origin": origin,
-                "destination": destination,
-                "departure": str(departure),
-                "origin_coords": [float(origin_coords[0]), float(origin_coords[1])],
-                "dest_coords": [float(dest_coords[0]), float(dest_coords[1])],
-                "max_extra_km": float(max_extra_km),
-                "max_extra_min": int(max_extra_min),
-            }
-            st.write("DEBUG payload:", payload)
-            supabase.table("rides").insert(payload).execute()
-            st.success("Ride posted!")
+            origin_coords = geocode_postcode(origin)
+            dest_coords = geocode_postcode(destination)
+            if not origin_coords or not dest_coords:
+                st.error("Invalid origin or destination postcode")
+            else:
+                payload = {
+                    "user_id": st.session_state.user["id"],
+                    "origin": origin,
+                    "destination": destination,
+                    "departure": str(departure),
+                    "origin_coords": [float(origin_coords[0]), float(origin_coords[1])],
+                    "dest_coords": [float(dest_coords[0]), float(dest_coords[1])],
+                    "max_extra_km": float(max_extra_km),
+                    "max_extra_min": int(max_extra_min),
+                }
+                st.write("DEBUG payload:", payload)
+                supabase.table("rides").insert(payload).execute()
+                st.success("Ride posted!")
 
 elif view == "Post Passenger":
     st.title("Post a Passenger Request")
@@ -155,26 +154,27 @@ elif view == "Post Passenger":
         departure = st.time_input("Departure Time")
         submit = st.form_submit_button("Submit Request")
 
-  if submit:
-    if not st.session_state.user or not st.session_state.user.get("id"):
-        st.error("You must be logged in to post a request.")
-    else:
-        origin_coords = geocode_postcode(origin)
-        dest_coords = geocode_postcode(destination)
-        if not origin_coords or not dest_coords:
-            st.error("Invalid origin or destination postcode")
+    if submit:
+        if not st.session_state.user or not st.session_state.user.get("id"):
+            st.error("You must be logged in to post a request.")
         else:
-            payload = {
-                "user_id": st.session_state.user["id"],
-                "origin": origin,
-                "destination": destination,
-                "departure": str(departure),
-                "origin_coords": [float(origin_coords[0]), float(origin_coords[1])],
-                "dest_coords": [float(dest_coords[0]), float(dest_coords[1])],
-            }
-            st.write("DEBUG payload:", payload)
-            supabase.table("passengers").insert(payload).execute()
-            st.success("Passenger request posted!")
+            origin_coords = geocode_postcode(origin)
+            dest_coords = geocode_postcode(destination)
+            if not origin_coords or not dest_coords:
+                st.error("Invalid origin or destination postcode")
+            else:
+                payload = {
+                    "user_id": st.session_state.user["id"],
+                    "origin": origin,
+                    "destination": destination,
+                    "departure": str(departure),
+                    "origin_coords": [float(origin_coords[0]), float(origin_coords[1])],
+                    "dest_coords": [float(dest_coords[0]), float(dest_coords[1])],
+                }
+                st.write("DEBUG payload:", payload)
+                supabase.table("passengers").insert(payload).execute()
+                st.success("Passenger request posted!")
+
 
 elif view == "Find Matches":
     st.title("Find Matches (Detour-based)")
