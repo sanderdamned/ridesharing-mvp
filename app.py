@@ -122,7 +122,7 @@ if view == "Post Ride":
         max_extra_min = st.number_input("Max extra time (minutes)", 0, 120, 15, step=5)
         submit = st.form_submit_button("Submit Ride")
 
-   if submit:
+if submit:
     if not st.session_state.user or not st.session_state.user.get("id"):
         st.error("You must be logged in to post a ride.")
     else:
@@ -145,7 +145,6 @@ if view == "Post Ride":
             st.write("DEBUG payload:", payload)
             supabase.table("rides").insert(payload).execute()
             st.success("Ride posted!")
-
 
 elif view == "Post Passenger":
     st.title("Post a Passenger Request")
