@@ -3,8 +3,8 @@ streamlit>=1.30.0,<2.0
 requests>=2.31.0,<3.0
 pandas>=2.0.3,<3.0
 
-# Nhost client
-nhost>=1.1.0,<2.0
+# Nhost client (official Python SDK may be named differently)
+nhost-py>=1.1.0,<2.0
 
 # Geocoding / GIS
 geopy>=2.3.0,<3.0
