@@ -1,6 +1,5 @@
-# app.py — Single-file Streamlit ridesharing MVP (refactored, RLS-aware)
 import streamlit as st
-from supabase import create_client, Client
+from nhost import NhostClient
 import requests
 from datetime import datetime, time
 from functools import lru_cache
@@ -12,21 +11,21 @@ import time as pytime
 # ===========================
 st.set_page_config(page_title="Ridesharing MVP", layout="centered")
 
-SUPABASE_URL = st.secrets.get("SUPABASE_URL")
-SUPABASE_KEY = st.secrets.get("SUPABASE_KEY")
+NHOST_URL = st.secrets.get("NHOST_URL")
+NHOST_KEY = st.secrets.get("NHOST_KEY")
 ORS_API_KEY = st.secrets.get("ORS_API_KEY")  # optional but recommended
 
-if not SUPABASE_URL or not SUPABASE_KEY:
+if not NHOST_URL or not NHOST_KEY:
     st.error(
-        "Missing Supabase secrets. Add SUPABASE_URL and SUPABASE_KEY in Streamlit Cloud Secrets."
+        "Missing Nhost secrets. Add NHOST_URL and NHOST_KEY in Streamlit Cloud Secrets."
     )
     st.stop()
 
-# Create Supabase client
+# Create Nhost client
 try:
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    nhost = NhostClient(endpoint=NHOST_URL, admin_secret=NHOST_KEY)
 except Exception as e:
-    st.error(f"Failed to create Supabase client: {e}")
+    st.error(f"Failed to create Nhost client: {e}")
     st.stop()
 
 # ===========================
@@ -120,9 +119,9 @@ def show_login():
     if st.button(action):
         try:
             if action == "Login":
-                resp = supabase.auth.sign_in_with_password({"email": email, "password": password})
+                resp = nhost.auth.sign_in_with_password({"email": email, "password": password})
             else:
-                resp = supabase.auth.sign_up({"email": email, "password": password})
+                resp = nhost.auth.sign_up({"email": email, "password": password})
             user = resp.user if hasattr(resp, "user") else resp.get("user")
             st.session_state.user = normalize_user(user)
             if st.session_state.user:
@@ -142,38 +141,60 @@ if not st.session_state.user:
 # ===========================
 def insert_table_row(table_name: str, payload: dict):
     try:
-        res = supabase.table(table_name).insert(payload).execute()
-        if isinstance(res, dict) and res.get("error"):
-            raise Exception(res["error"])
-        return res
+        res = nhost.graphql.query(f"""
+            mutation {{
+                insert_{table_name}(objects: [{payload}]) {{
+                    returning {{
+                        id
+                    }}
+                }}
+            }}
+        """)
+        if res.errors:
+            raise Exception(res.errors)
+        return res.data
     except Exception as e:
-        msg = str(e)
-        if "row-level security" in msg or "42501" in msg:
-            st.error(
-                "Insert blocked by Supabase Row-Level Security (RLS).\n\n"
-                "➡️ Fix: Add an RLS policy in Supabase for this table, e.g.:\n\n"
-                "CREATE POLICY \"Allow insert for authenticated users\" "
-                "ON public.rides FOR INSERT USING (auth.uid() IS NOT NULL);"
-            )
-        else:
-            st.error(f"Insert error: {e}")
+        st.error(f"Insert error: {e}")
         return None
 
 def get_rides():
     try:
-        res = supabase.table("rides").select("*").execute()
-        return res.data if hasattr(res, "data") else res.get("data", [])
+        res = nhost.graphql.query("""
+            query {
+                rides {
+                    id
+                    user_id
+                    origin
+                    destination
+                    departure
+                    origin_coords
+                    dest_coords
+                    max_extra_km
+                    max_extra_min
+                }
+            }
+        """)
+        return res.data.get("rides", [])
     except Exception as e:
         st.error(f"Failed fetching rides: {e}")
         return []
 
 def get_passengers(user_id=None):
     try:
-        q = supabase.table("passengers").select("*")
-        if user_id:
-            q = q.eq("user_id", user_id)
-        res = q.execute()
-        return res.data if hasattr(res, "data") else res.get("data", [])
+        res = nhost.graphql.query(f"""
+            query {{
+                passengers(where: {{user_id: {{_eq: "{user_id}"}}}}) {{
+                    id
+                    user_id
+                    origin
+                    destination
+                    departure
+                    origin_coords
+                    dest_coords
+                }}
+            }}
+        """)
+        return res.data.get("passengers", [])
     except Exception as e:
         st.error(f"Failed fetching passengers: {e}")
         return []
@@ -184,7 +205,7 @@ def get_passengers(user_id=None):
 st.sidebar.title(f"Welcome, {st.session_state.user.get('email')}")
 if st.sidebar.button("Log out"):
     try:
-        supabase.auth.sign_out()
+        nhost.auth.sign_out()
     except Exception:
         pass
     st.session_state.user = None
@@ -264,27 +285,6 @@ elif view == "Find Matches":
             if base_dist is None:
                 continue
             d1, _ = route_distance_time(ride["origin_coords"], passenger["origin_coords"])
-            d2, _ = route_distance_time(passenger["origin_coords"], passenger["dest_coords"])
-            d3, _ = route_distance_time(passenger["dest_coords"], ride["dest_coords"])
-            if None in (d1, d2, d3):
-                continue
-            detour_dist = d1 + d2 + d3
-            extra_dist = detour_dist - base_dist
-            if extra_dist <= ride.get("max_extra_km", 999):
-                matches.append((ride, extra_dist))
-        if matches:
-            st.subheader("Matching Rides:")
-            for ride, ex_d in matches:
-                st.write(f"🚗 {ride.get('origin')} → {ride.get('destination')} at {ride.get('departure')}")
-                st.write(f"   Extra distance: {ex_d:.1f} km (max {ride.get('max_extra_km')})")
-        else:
-            st.warning("No suitable matches found.")
-
-# ---------- Debug ----------
-elif view == "Debug":
-    st.title("Debug Info")
-    st.json(st.session_state.user)
-    if st.button("List rides"):
-        st.json(get_rides())
-    if st.button("List my passengers"):
-        st.json(get_passengers(st.session_state.user["id"]))
+            d2, _ = route_distance_time(passenger["origin_coords"], passenger["dest_coords
+::contentReference[oaicite:0]{index=0}
+ 
