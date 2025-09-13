@@ -166,7 +166,11 @@ def insert_table_row(table_name: str, payload: dict):
         else:
             payload_copy[key] = "[]"
 
-    fields = ", ".join(f"{k}: {v if isinstance(v, (int, float)) else f'\"{v}\"'}" for k,v in payload_copy.items())
+    # FIXED: correct indentation
+    fields = ", ".join(
+        f"{k}: {v}" if isinstance(v, (int, float)) else f'{k}: "{v}"'
+        for k, v in payload_copy.items()
+    )
     query = f"""
     mutation {{
         insert_{table_name}(objects: {{ {fields} }}) {{
@@ -182,6 +186,7 @@ def insert_table_row(table_name: str, payload: dict):
     except Exception as e:
         st.error(f"Insert error: {e}")
         return None
+
 
 def get_rides():
     query = """
