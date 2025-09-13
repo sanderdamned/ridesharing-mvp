@@ -2,6 +2,8 @@ import streamlit as st
 from supabase import create_client, Client
 import requests
 from datetime import datetime, time
+import json
+import time as pytime
 
 # ================== CONFIG ==================
 st.set_page_config(page_title="Ridesharing MVP", layout="centered")
@@ -11,7 +13,6 @@ SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ORS API Key
 ORS_API_KEY = st.secrets.get("ORS_API_KEY", None)
 
 # ================== SESSION STATE INIT ==================
@@ -28,51 +29,40 @@ def normalize_user(user_obj):
         "email": getattr(user_obj, "email", None)
     }
 
-def normalize_postcode(postcode: str):
-    """Format Dutch postcode to '1234 AB' format"""
-    pc = postcode.replace(" ", "").upper()
-    if len(pc) == 6:
-        return pc[:4] + " " + pc[4:]
-    return pc.upper()
-
-def geocode_postcode(postcode: str):
-    """Convert postcode to coordinates using ORS geocoding"""
+def geocode_postcode(postcode: str, retries=2):
+    """Convert postcode to [lat, lon] using ORS geocoding with retry"""
     if not ORS_API_KEY:
         st.error("ORS_API_KEY missing in Streamlit secrets")
         return None
 
-    pc = normalize_postcode(postcode)
-    try:
-        url = "https://api.openrouteservice.org/geocode/search"
-        params = {"api_key": ORS_API_KEY, "text": pc, "boundary.country": "NL"}
-        r = requests.get(url, params=params, timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        if not data.get("features"):
-            st.error(f"No geocoding result for '{pc}'")
-            return None
-        coords = data["features"][0]["geometry"]["coordinates"]  # [lon, lat]
-        return [float(coords[1]), float(coords[0])]  # [lat, lon]
-    except Exception as e:
-        st.error(f"Geocoding failed for '{pc}': {e}")
-        return None
+    url = "https://api.openrouteservice.org/geocode/search"
+    params = {"api_key": ORS_API_KEY, "text": postcode, "boundary.country": "NL"}
 
-def route_distance_time(start, end):
-    """Get driving distance (km) + duration (min) between two coords"""
-    if not ORS_API_KEY:
-        return None, None
-    try:
-        url = "https://api.openrouteservice.org/v2/directions/driving-car"
-        headers = {"Authorization": ORS_API_KEY}
-        body = {"coordinates": [[start[1], start[0]], [end[1], end[0]]]}
-        r = requests.post(url, json=body, headers=headers, timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        dist = data["routes"][0]["summary"]["distance"] / 1000  # km
-        dur = data["routes"][0]["summary"]["duration"] / 60     # min
-        return dist, dur
-    except Exception:
-        return None, None
+    for attempt in range(retries + 1):
+        try:
+            r = requests.get(url, params=params, timeout=5)
+            r.raise_for_status()
+            data = r.json()
+            coords = data["features"][0]["geometry"]["coordinates"]  # [lon, lat]
+            return [float(coords[1]), float(coords[0])]  # [lat, lon]
+        except (requests.RequestException, IndexError, KeyError) as e:
+            if attempt < retries:
+                pytime.sleep(1)
+                continue
+            st.error(f"Geocoding failed for '{postcode}': {e}")
+            return None
+
+def format_departure(dep):
+    """Return departure time as HH:MM:SS string"""
+    if isinstance(dep, time):
+        return dep.strftime("%H:%M:%S")
+    elif isinstance(dep, str):
+        try:
+            dt = datetime.strptime(dep, "%H:%M")
+            return dt.strftime("%H:%M:%S")
+        except ValueError:
+            return dep
+    return str(dep)
 
 # ================== AUTH ==================
 def login():
@@ -84,18 +74,11 @@ def login():
     if st.button(action):
         try:
             if action == "Login":
-                user_response = supabase.auth.sign_in_with_password({
-                    "email": email,
-                    "password": password
-                })
+                user_response = supabase.auth.sign_in_with_password({"email": email, "password": password})
             else:
-                user_response = supabase.auth.sign_up({
-                    "email": email,
-                    "password": password
-                })
+                user_response = supabase.auth.sign_up({"email": email, "password": password})
 
             st.session_state.user = normalize_user(user_response.user)
-
             if st.session_state.user:
                 st.success(f"{action} successful!")
                 st.rerun()
@@ -127,13 +110,12 @@ view = st.sidebar.radio("Go to", ["Post Ride", "Post Passenger", "Find Matches"]
 # ================== VIEWS ==================
 if view == "Post Ride":
     st.title("Post a Ride (Driver)")
-
     with st.form("ride_form"):
         origin = st.text_input("Origin Postcode")
         destination = st.text_input("Destination Postcode")
-        departure = st.time_input("Departure Time", value=time(9, 0))
+        departure = st.time_input("Departure Time")
         max_extra_km = st.number_input("Max extra distance (km)", 0.0, 50.0, 2.0, step=0.5)
-        max_extra_min = st.number_input("Max extra time (minutes)", 0, 120, 15, step=5)
+        max_extra_min = st.number_input("Max extra time (minutes)", 0, 180, 15, step=5)
         submit = st.form_submit_button("Submit Ride")
 
     if submit:
@@ -142,16 +124,17 @@ if view == "Post Ride":
         else:
             origin_coords = geocode_postcode(origin)
             dest_coords = geocode_postcode(destination)
+
             if not origin_coords or not dest_coords:
                 st.error("Invalid origin or destination postcode")
             else:
                 payload = {
                     "user_id": st.session_state.user["id"],
-                    "origin": normalize_postcode(origin),
-                    "destination": normalize_postcode(destination),
-                    "departure": str(departure),
-                    "origin_coords": [float(origin_coords[0]), float(origin_coords[1])],
-                    "dest_coords": [float(dest_coords[0]), float(dest_coords[1])],
+                    "origin": origin.strip().upper(),
+                    "destination": destination.strip().upper(),
+                    "departure": format_departure(departure),
+                    "origin_coords": json.dumps(origin_coords),
+                    "dest_coords": json.dumps(dest_coords),
                     "max_extra_km": float(max_extra_km),
                     "max_extra_min": int(max_extra_min),
                 }
@@ -161,11 +144,10 @@ if view == "Post Ride":
 
 elif view == "Post Passenger":
     st.title("Post a Passenger Request")
-
     with st.form("passenger_form"):
         origin = st.text_input("Origin Postcode")
         destination = st.text_input("Destination Postcode")
-        departure = st.time_input("Departure Time", value=time(9, 0))
+        departure = st.time_input("Departure Time")
         submit = st.form_submit_button("Submit Request")
 
     if submit:
@@ -174,16 +156,17 @@ elif view == "Post Passenger":
         else:
             origin_coords = geocode_postcode(origin)
             dest_coords = geocode_postcode(destination)
+
             if not origin_coords or not dest_coords:
                 st.error("Invalid origin or destination postcode")
             else:
                 payload = {
                     "user_id": st.session_state.user["id"],
-                    "origin": normalize_postcode(origin),
-                    "destination": normalize_postcode(destination),
-                    "departure": str(departure),
-                    "origin_coords": [float(origin_coords[0]), float(origin_coords[1])],
-                    "dest_coords": [float(dest_coords[0]), float(dest_coords[1])],
+                    "origin": origin.strip().upper(),
+                    "destination": destination.strip().upper(),
+                    "departure": format_departure(departure),
+                    "origin_coords": json.dumps(origin_coords),
+                    "dest_coords": json.dumps(dest_coords),
                 }
                 st.write("DEBUG payload:", payload)
                 supabase.table("passengers").insert(payload).execute()
@@ -208,15 +191,21 @@ elif view == "Find Matches":
         if rides:
             matches = []
             for ride in rides:
-                base_dist, base_time = route_distance_time(ride["origin_coords"], ride["dest_coords"])
+                base_dist, base_time = route_distance_time(
+                    json.loads(ride["origin_coords"]), json.loads(ride["dest_coords"])
+                )
                 if base_dist is None:
                     continue
 
-                detour_dist, detour_time = route_distance_time(ride["origin_coords"], passenger["origin_coords"])
+                detour_dist, detour_time = route_distance_time(
+                    json.loads(ride["origin_coords"]), json.loads(passenger["origin_coords"])
+                )
                 extra_dist, extra_time = 0, 0
                 if detour_dist is not None:
-                    to_dest_dist, to_dest_time = route_distance_time(passenger["origin_coords"], ride["dest_coords"])
-                    if to_dest_dist:
+                    to_dest_dist, to_dest_time = route_distance_time(
+                        json.loads(passenger["origin_coords"]), json.loads(ride["dest_coords"])
+                    )
+                    if to_dest_dist is not None:
                         detour_dist += to_dest_dist
                         detour_time += to_dest_time
                         extra_dist = detour_dist - base_dist
