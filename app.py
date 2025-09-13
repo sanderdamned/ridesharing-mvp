@@ -12,11 +12,11 @@ import time as pytime
 st.set_page_config(page_title="Ridesharing MVP", layout="centered")
 
 NHOST_URL = st.secrets.get("NHOST_URL")
-NHOST_KEY = st.secrets.get("NHOST_KEY")
+NHOST_KEY = st.secrets.get("NHOST_ADMIN_SECRET")
 ORS_API_KEY = st.secrets.get("ORS_API_KEY")  # optional
 
 if not NHOST_URL or not NHOST_KEY:
-    st.error("Missing Nhost secrets. Add NHOST_URL and NHOST_KEY.")
+    st.error("Missing Nhost secrets. Add NHOST_URL and NHOST_ADMIN_SECRET in Streamlit Cloud Secrets.")
     st.stop()
 
 nhost = NhostClient(endpoint=NHOST_URL, admin_secret=NHOST_KEY)
@@ -35,19 +35,10 @@ def format_departure(dep):
             return dep
     return str(dep)
 
-def validate_coordinates(coords):
-    if not isinstance(coords, (list, tuple)) or len(coords) != 2:
-        return False
-    try:
-        float(coords[0]); float(coords[1])
-        return True
-    except Exception:
-        return False
-
 @lru_cache(maxsize=1000)
 def geocode_postcode_cached(postcode: str, retries=2):
     if not ORS_API_KEY:
-        return None
+        return []
     url = "https://api.openrouteservice.org/geocode/search"
     params = {"api_key": ORS_API_KEY, "text": postcode, "boundary.country": "NL"}
     for attempt in range(retries + 1):
@@ -61,7 +52,7 @@ def geocode_postcode_cached(postcode: str, retries=2):
             if attempt < retries:
                 pytime.sleep(1)
                 continue
-            return None
+            return []
 
 def route_distance_time(start, end):
     if not ORS_API_KEY:
@@ -129,15 +120,18 @@ if not st.session_state.user:
 # ===========================
 # DB HELPERS
 # ===========================
-def format_array(arr):
-    return f"[{','.join(str(x) for x in arr)}]" if arr else "[]"
-
 def insert_table_row(table_name: str, payload: dict):
+    def format_array(arr):
+        return f"[{','.join(str(x) for x in arr)}]" if arr else "[]"
+
     payload_copy = payload.copy()
     for key in ["origin_coords", "dest_coords"]:
-        if key in payload_copy:
+        if key in payload_copy and payload_copy[key]:
             payload_copy[key] = format_array(payload_copy[key])
-    fields = ", ".join(f"{k}: {v if isinstance(v,(int,float)) else f'\"{v}\"'}" for k,v in payload_copy.items())
+        else:
+            payload_copy[key] = "[]"
+
+    fields = ", ".join(f"{k}: {v if isinstance(v, (int, float)) else f'\"{v}\"'}" for k,v in payload_copy.items())
     query = f"""
     mutation {{
         insert_{table_name}(objects: {{ {fields} }}) {{
@@ -209,9 +203,10 @@ if view == "Post Ride":
         max_extra_km = st.number_input("Max extra distance (km)", 0.0, 100.0, 5.0, step=0.5)
         max_extra_min = st.number_input("Max extra time (minutes)", 0, 240, 15, step=5)
         submit = st.form_submit_button("Submit Ride")
+
     if submit:
-        origin_coords = geocode_postcode_cached(origin) if ORS_API_KEY else []
-        dest_coords = geocode_postcode_cached(destination) if ORS_API_KEY else []
+        origin_coords = geocode_postcode_cached(origin)
+        dest_coords = geocode_postcode_cached(destination)
         payload = {
             "user_id": st.session_state.user["id"],
             "origin": origin.strip().upper(),
@@ -234,9 +229,10 @@ elif view == "Post Passenger":
         destination = st.text_input("Destination Postcode (NL)")
         departure = st.time_input("Departure Time", value=datetime.now().time())
         submit = st.form_submit_button("Submit Request")
+
     if submit:
-        origin_coords = geocode_postcode_cached(origin) if ORS_API_KEY else []
-        dest_coords = geocode_postcode_cached(destination) if ORS_API_KEY else []
+        origin_coords = geocode_postcode_cached(origin)
+        dest_coords = geocode_postcode_cached(destination)
         payload = {
             "user_id": st.session_state.user["id"],
             "origin": origin.strip().upper(),
@@ -248,6 +244,7 @@ elif view == "Post Passenger":
         }
         res = insert_table_row("passengers", payload)
         if res: st.success("Passenger request posted!")
+
 
 # ---------- Find Matches ----------
 elif view == "Find Matches":
