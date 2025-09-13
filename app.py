@@ -1,10 +1,11 @@
 import streamlit as st
-from nhost import NhostClient
+from nhost_py import NhostClient   # <--- fixed
 import requests
 from datetime import datetime, time
 from functools import lru_cache
 import math
 import time as pytime
+
 
 # ===========================
 # CONFIG / INIT
