@@ -1,7 +1,7 @@
 import streamlit as st
 from supabase import create_client, Client
-from datetime import datetime
 import requests
+from datetime import datetime, time
 
 # ================== CONFIG ==================
 st.set_page_config(page_title="Ridesharing MVP", layout="centered")
@@ -14,9 +14,9 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # ORS API Key
 ORS_API_KEY = st.secrets.get("ORS_API_KEY", None)
 
-# ================== SESSION STATE ==================
+# ================== SESSION STATE INIT ==================
 if "user" not in st.session_state:
-    st.session_state.user = None  # Always None or dict with id/email
+    st.session_state.user = None  # None or dict with id/email
 
 # ================== HELPERS ==================
 def normalize_user(user_obj):
@@ -28,21 +28,33 @@ def normalize_user(user_obj):
         "email": getattr(user_obj, "email", None)
     }
 
+def normalize_postcode(postcode: str):
+    """Format Dutch postcode to '1234 AB' format"""
+    pc = postcode.replace(" ", "").upper()
+    if len(pc) == 6:
+        return pc[:4] + " " + pc[4:]
+    return pc.upper()
+
 def geocode_postcode(postcode: str):
     """Convert postcode to coordinates using ORS geocoding"""
     if not ORS_API_KEY:
         st.error("ORS_API_KEY missing in Streamlit secrets")
         return None
+
+    pc = normalize_postcode(postcode)
     try:
         url = "https://api.openrouteservice.org/geocode/search"
-        params = {"api_key": ORS_API_KEY, "text": postcode, "boundary.country": "NL"}
-        r = requests.get(url, params=params, timeout=5)
+        params = {"api_key": ORS_API_KEY, "text": pc, "boundary.country": "NL"}
+        r = requests.get(url, params=params, timeout=15)
         r.raise_for_status()
         data = r.json()
+        if not data.get("features"):
+            st.error(f"No geocoding result for '{pc}'")
+            return None
         coords = data["features"][0]["geometry"]["coordinates"]  # [lon, lat]
-        return [float(coords[1]), float(coords[0])]  # [lat, lon] as floats
+        return [float(coords[1]), float(coords[0])]  # [lat, lon]
     except Exception as e:
-        st.error(f"Geocoding failed for '{postcode}': {e}")
+        st.error(f"Geocoding failed for '{pc}': {e}")
         return None
 
 def route_distance_time(start, end):
@@ -52,8 +64,8 @@ def route_distance_time(start, end):
     try:
         url = "https://api.openrouteservice.org/v2/directions/driving-car"
         headers = {"Authorization": ORS_API_KEY}
-        body = {"coordinates": [[float(start[1]), float(start[0])], [float(end[1]), float(end[0])]]}
-        r = requests.post(url, json=body, headers=headers, timeout=5)
+        body = {"coordinates": [[start[1], start[0]], [end[1], end[0]]]}
+        r = requests.post(url, json=body, headers=headers, timeout=15)
         r.raise_for_status()
         data = r.json()
         dist = data["routes"][0]["summary"]["distance"] / 1000  # km
@@ -81,7 +93,9 @@ def login():
                     "email": email,
                     "password": password
                 })
+
             st.session_state.user = normalize_user(user_response.user)
+
             if st.session_state.user:
                 st.success(f"{action} successful!")
                 st.rerun()
@@ -95,7 +109,7 @@ if not st.session_state.user:
     login()
     st.stop()
 
-# ================== SIDEBAR ==================
+# Sidebar
 email = st.session_state.user.get("email")
 if email:
     st.sidebar.title(f"Welcome, {email}")
@@ -117,8 +131,8 @@ if view == "Post Ride":
     with st.form("ride_form"):
         origin = st.text_input("Origin Postcode")
         destination = st.text_input("Destination Postcode")
-        departure_time = st.time_input("Departure Time")
-        max_extra_km = st.number_input("Max extra distance (km)", 0.0, 20.0, 2.0, step=0.5)
+        departure = st.time_input("Departure Time", value=time(9, 0))
+        max_extra_km = st.number_input("Max extra distance (km)", 0.0, 50.0, 2.0, step=0.5)
         max_extra_min = st.number_input("Max extra time (minutes)", 0, 120, 15, step=5)
         submit = st.form_submit_button("Submit Ride")
 
@@ -128,25 +142,22 @@ if view == "Post Ride":
         else:
             origin_coords = geocode_postcode(origin)
             dest_coords = geocode_postcode(destination)
-            if origin_coords is None or dest_coords is None:
-                st.error("Invalid origin or destination postcode.")
+            if not origin_coords or not dest_coords:
+                st.error("Invalid origin or destination postcode")
             else:
                 payload = {
                     "user_id": st.session_state.user["id"],
-                    "origin": origin.strip().upper(),
-                    "destination": destination.strip().upper(),
-                    "departure": departure_time.strftime("%H:%M:%S"),
-                    "origin_coords": [float(c) for c in origin_coords],
-                    "dest_coords": [float(c) for c in dest_coords],
+                    "origin": normalize_postcode(origin),
+                    "destination": normalize_postcode(destination),
+                    "departure": str(departure),
+                    "origin_coords": [float(origin_coords[0]), float(origin_coords[1])],
+                    "dest_coords": [float(dest_coords[0]), float(dest_coords[1])],
                     "max_extra_km": float(max_extra_km),
                     "max_extra_min": int(max_extra_min),
                 }
                 st.write("DEBUG payload:", payload)
-                try:
-                    supabase.table("rides").insert(payload).execute()
-                    st.success("Ride posted!")
-                except Exception as e:
-                    st.error(f"Insert failed: {e}")
+                supabase.table("rides").insert(payload).execute()
+                st.success("Ride posted!")
 
 elif view == "Post Passenger":
     st.title("Post a Passenger Request")
@@ -154,7 +165,7 @@ elif view == "Post Passenger":
     with st.form("passenger_form"):
         origin = st.text_input("Origin Postcode")
         destination = st.text_input("Destination Postcode")
-        departure_time = st.time_input("Departure Time")
+        departure = st.time_input("Departure Time", value=time(9, 0))
         submit = st.form_submit_button("Submit Request")
 
     if submit:
@@ -163,23 +174,20 @@ elif view == "Post Passenger":
         else:
             origin_coords = geocode_postcode(origin)
             dest_coords = geocode_postcode(destination)
-            if origin_coords is None or dest_coords is None:
-                st.error("Invalid origin or destination postcode.")
+            if not origin_coords or not dest_coords:
+                st.error("Invalid origin or destination postcode")
             else:
                 payload = {
                     "user_id": st.session_state.user["id"],
-                    "origin": origin.strip().upper(),
-                    "destination": destination.strip().upper(),
-                    "departure": departure_time.strftime("%H:%M:%S"),
-                    "origin_coords": [float(c) for c in origin_coords],
-                    "dest_coords": [float(c) for c in dest_coords],
+                    "origin": normalize_postcode(origin),
+                    "destination": normalize_postcode(destination),
+                    "departure": str(departure),
+                    "origin_coords": [float(origin_coords[0]), float(origin_coords[1])],
+                    "dest_coords": [float(dest_coords[0]), float(dest_coords[1])],
                 }
                 st.write("DEBUG payload:", payload)
-                try:
-                    supabase.table("passengers").insert(payload).execute()
-                    st.success("Passenger request posted!")
-                except Exception as e:
-                    st.error(f"Insert failed: {e}")
+                supabase.table("passengers").insert(payload).execute()
+                st.success("Passenger request posted!")
 
 elif view == "Find Matches":
     st.title("Find Matches (Detour-based)")
@@ -192,8 +200,10 @@ elif view == "Find Matches":
     if not passengers:
         st.info("You need to post a passenger request first.")
     else:
-        passenger = passengers[-1]  # latest
-        st.write(f"Passenger request: {passenger['origin']} → {passenger['destination']} at {passenger['departure']}")
+        passenger = passengers[-1]
+        st.write(
+            f"Passenger request: {passenger['origin']} → {passenger['destination']} at {passenger['departure']}"
+        )
 
         if rides:
             matches = []
@@ -201,6 +211,7 @@ elif view == "Find Matches":
                 base_dist, base_time = route_distance_time(ride["origin_coords"], ride["dest_coords"])
                 if base_dist is None:
                     continue
+
                 detour_dist, detour_time = route_distance_time(ride["origin_coords"], passenger["origin_coords"])
                 extra_dist, extra_time = 0, 0
                 if detour_dist is not None:
@@ -210,6 +221,7 @@ elif view == "Find Matches":
                         detour_time += to_dest_time
                         extra_dist = detour_dist - base_dist
                         extra_time = detour_time - base_time
+
                 if extra_dist <= ride["max_extra_km"] and extra_time <= ride["max_extra_min"]:
                     matches.append((ride, extra_dist, extra_time))
 
