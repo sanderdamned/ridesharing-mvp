@@ -136,8 +136,8 @@ if view == "Post Ride":
                     "origin": origin,
                     "destination": destination,
                     "departure": str(departure),
-                    "origin_coords": [float(origin_coords[0]), float(origin_coords[1])],
-                    "dest_coords": [float(dest_coords[0]), float(dest_coords[1])],
+                    "origin_coords": f'{{{origin_coords[0]}, {origin_coords[1]}}}',
+                    "dest_coords": f'{{{dest_coords[0]}, {dest_coords[1]}}}',
                     "max_extra_km": float(max_extra_km),
                     "max_extra_min": int(max_extra_min),
                 }
@@ -168,8 +168,8 @@ elif view == "Post Passenger":
                     "origin": origin,
                     "destination": destination,
                     "departure": str(departure),
-                    "origin_coords": [float(origin_coords[0]), float(origin_coords[1])],
-                    "dest_coords": [float(dest_coords[0]), float(dest_coords[1])],
+                    "origin_coords": f'{{{origin_coords[0]}, {origin_coords[1]}}}',
+                    "dest_coords": f'{{{dest_coords[0]}, {dest_coords[1]}}}',
                 }
                 st.write("DEBUG payload:", payload)
                 supabase.table("passengers").insert(payload).execute()
