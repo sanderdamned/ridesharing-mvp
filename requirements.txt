@@ -1,16 +1,9 @@
-# Core
 streamlit>=1.30.0,<2.0
 requests>=2.31.0,<3.0
 pandas>=2.0.3,<3.0
-
-# Nhost client (official Python SDK may be named differently)
-nhost-py>=1.1.0,<2.0
-
-# Geocoding / GIS
+nhost-py>=1.1.0,<2.0      # <- must be nhost-py
 geopy>=2.3.0,<3.0
 shapely>=2.0.1,<3.0
 pyproj>=3.6.0,<4.0
-
-# Utilities
 lxml>=4.9.3,<5.0
 numpy>=1.26.0,<2.0
