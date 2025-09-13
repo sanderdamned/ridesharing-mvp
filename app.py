@@ -2,7 +2,6 @@ import streamlit as st
 from supabase import create_client, Client
 import requests
 from datetime import datetime, time
-import json
 import time as pytime
 
 # ================== CONFIG ==================
@@ -21,7 +20,6 @@ if "user" not in st.session_state:
 
 # ================== HELPERS ==================
 def normalize_user(user_obj):
-    """Convert Supabase user object into a safe dict"""
     if not user_obj:
         return None
     return {
@@ -30,14 +28,12 @@ def normalize_user(user_obj):
     }
 
 def geocode_postcode(postcode: str, retries=2):
-    """Convert postcode to [lat, lon] using ORS geocoding with retry"""
+    """Return [lat, lon] as float list"""
     if not ORS_API_KEY:
         st.error("ORS_API_KEY missing in Streamlit secrets")
         return None
-
     url = "https://api.openrouteservice.org/geocode/search"
     params = {"api_key": ORS_API_KEY, "text": postcode, "boundary.country": "NL"}
-
     for attempt in range(retries + 1):
         try:
             r = requests.get(url, params=params, timeout=5)
@@ -53,7 +49,7 @@ def geocode_postcode(postcode: str, retries=2):
             return None
 
 def format_departure(dep):
-    """Return departure time as HH:MM:SS string"""
+    """Return HH:MM:SS string"""
     if isinstance(dep, time):
         return dep.strftime("%H:%M:%S")
     elif isinstance(dep, str):
@@ -63,6 +59,23 @@ def format_departure(dep):
         except ValueError:
             return dep
     return str(dep)
+
+def route_distance_time(start, end):
+    """Return (distance_km, duration_min) using ORS"""
+    if not ORS_API_KEY:
+        return None, None
+    url = "https://api.openrouteservice.org/v2/directions/driving-car"
+    headers = {"Authorization": ORS_API_KEY}
+    body = {"coordinates": [[start[1], start[0]], [end[1], end[0]]]}
+    try:
+        r = requests.post(url, json=body, headers=headers, timeout=5)
+        r.raise_for_status()
+        data = r.json()
+        dist = data["routes"][0]["summary"]["distance"] / 1000
+        dur = data["routes"][0]["summary"]["duration"] / 60
+        return dist, dur
+    except Exception:
+        return None, None
 
 # ================== AUTH ==================
 def login():
@@ -77,22 +90,20 @@ def login():
                 user_response = supabase.auth.sign_in_with_password({"email": email, "password": password})
             else:
                 user_response = supabase.auth.sign_up({"email": email, "password": password})
-
             st.session_state.user = normalize_user(user_response.user)
             if st.session_state.user:
                 st.success(f"{action} successful!")
                 st.rerun()
             else:
-                st.error(f"{action} failed. Check credentials.")
+                st.error(f"{action} failed.")
         except Exception as e:
             st.error(f"Error: {e}")
 
-# ================== MAIN FLOW ==================
 if not st.session_state.user:
     login()
     st.stop()
 
-# Sidebar
+# ================== SIDEBAR ==================
 email = st.session_state.user.get("email")
 if email:
     st.sidebar.title(f"Welcome, {email}")
@@ -124,7 +135,6 @@ if view == "Post Ride":
         else:
             origin_coords = geocode_postcode(origin)
             dest_coords = geocode_postcode(destination)
-
             if not origin_coords or not dest_coords:
                 st.error("Invalid origin or destination postcode")
             else:
@@ -133,8 +143,8 @@ if view == "Post Ride":
                     "origin": origin.strip().upper(),
                     "destination": destination.strip().upper(),
                     "departure": format_departure(departure),
-                    "origin_coords": json.dumps(origin_coords),
-                    "dest_coords": json.dumps(dest_coords),
+                    "origin_coords": origin_coords,  # ✅ float list
+                    "dest_coords": dest_coords,      # ✅ float list
                     "max_extra_km": float(max_extra_km),
                     "max_extra_min": int(max_extra_min),
                 }
@@ -156,7 +166,6 @@ elif view == "Post Passenger":
         else:
             origin_coords = geocode_postcode(origin)
             dest_coords = geocode_postcode(destination)
-
             if not origin_coords or not dest_coords:
                 st.error("Invalid origin or destination postcode")
             else:
@@ -165,8 +174,8 @@ elif view == "Post Passenger":
                     "origin": origin.strip().upper(),
                     "destination": destination.strip().upper(),
                     "departure": format_departure(departure),
-                    "origin_coords": json.dumps(origin_coords),
-                    "dest_coords": json.dumps(dest_coords),
+                    "origin_coords": origin_coords,  # ✅ float list
+                    "dest_coords": dest_coords,      # ✅ float list
                 }
                 st.write("DEBUG payload:", payload)
                 supabase.table("passengers").insert(payload).execute()
@@ -184,36 +193,24 @@ elif view == "Find Matches":
         st.info("You need to post a passenger request first.")
     else:
         passenger = passengers[-1]
-        st.write(
-            f"Passenger request: {passenger['origin']} → {passenger['destination']} at {passenger['departure']}"
-        )
-
+        st.write(f"Passenger request: {passenger['origin']} → {passenger['destination']} at {passenger['departure']}")
         if rides:
             matches = []
             for ride in rides:
-                base_dist, base_time = route_distance_time(
-                    json.loads(ride["origin_coords"]), json.loads(ride["dest_coords"])
-                )
+                base_dist, base_time = route_distance_time(ride["origin_coords"], ride["dest_coords"])
                 if base_dist is None:
                     continue
-
-                detour_dist, detour_time = route_distance_time(
-                    json.loads(ride["origin_coords"]), json.loads(passenger["origin_coords"])
-                )
+                detour_dist, detour_time = route_distance_time(ride["origin_coords"], passenger["origin_coords"])
                 extra_dist, extra_time = 0, 0
                 if detour_dist is not None:
-                    to_dest_dist, to_dest_time = route_distance_time(
-                        json.loads(passenger["origin_coords"]), json.loads(ride["dest_coords"])
-                    )
+                    to_dest_dist, to_dest_time = route_distance_time(passenger["origin_coords"], ride["dest_coords"])
                     if to_dest_dist is not None:
                         detour_dist += to_dest_dist
                         detour_time += to_dest_time
                         extra_dist = detour_dist - base_dist
                         extra_time = detour_time - base_time
-
                 if extra_dist <= ride["max_extra_km"] and extra_time <= ride["max_extra_min"]:
                     matches.append((ride, extra_dist, extra_time))
-
             if matches:
                 st.subheader("Matching Rides:")
                 for ride, ex_d, ex_t in matches:
