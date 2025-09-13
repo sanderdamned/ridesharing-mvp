@@ -4,7 +4,7 @@ requests>=2.31.0,<3.0
 pandas>=2.0.3,<3.0
 
 # Nhost SDK (correct PyPI package)
-nhost-py>=1.1.0,<2.0
+nhost>=1.1.0,<2.0
 
 # Geocoding / GIS
 geopy>=2.3.0,<3.0
