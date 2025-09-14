@@ -81,13 +81,13 @@ def haversine_km(a, b):
 # NHOST AUTH / GRAPHQL
 # ===========================
 def nhost_sign_up(email, password):
-    url = f"{NHOST_AUTH_URL}/email-password/signup"
+    url = f"{NHOST_AUTH_URL}/sign-up/email-password"
     r = requests.post(url, json={"email": email, "password": password})
     r.raise_for_status()
     return r.json()
 
 def nhost_sign_in(email, password):
-    url = f"{NHOST_AUTH_URL}/email-password/signin"
+    url = f"{NHOST_AUTH_URL}/sign-in/email-password"
     r = requests.post(url, json={"email": email, "password": password})
     r.raise_for_status()
     return r.json()
