@@ -37,8 +37,6 @@ def format_departure(dep):
 
 @lru_cache(maxsize=1000)
 def geocode_postcode_cached(postcode: str, retries=2):
-    if not ORS_API_KEY:
-        return []
     geolocator = Nominatim(user_agent="ridesharing_app")
     for attempt in range(retries + 1):
         try:
@@ -53,10 +51,8 @@ def geocode_postcode_cached(postcode: str, retries=2):
             return []
 
 def route_distance_time(start, end):
-    # Optional: replace with OpenRouteService if ORS_API_KEY is set
     if not start or not end:
         return None, None
-    # Simple Haversine distance for demo
     lat1, lon1 = start
     lat2, lon2 = end
     R = 6371.0
@@ -67,15 +63,6 @@ def route_distance_time(start, end):
     dist = R * c
     dur = dist / 50 * 60  # assume 50 km/h avg speed
     return dist, dur
-
-def haversine_km(a, b):
-    lat1, lon1 = map(math.radians, a)
-    lat2, lon2 = map(math.radians, b)
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    R = 6371.0
-    h = math.sin(dlat/2)**2 + math.cos(lat1)*math.cos(lat2)*math.sin(dlon/2)**2
-    return 2 * R * math.asin(math.sqrt(h))
 
 # ===========================
 # AUTH
@@ -143,7 +130,6 @@ def get_table_rows(table_name: str, filter_by: dict = None):
         st.error(f"Query exception: {e}")
         return []
 
-
 # ===========================
 # MAIN UI
 # ===========================
@@ -152,7 +138,6 @@ if st.sidebar.button("Log out"):
     supabase.auth.sign_out()
     st.session_state.user = None
     st.session_state.access_token = None
-    st.experimental_rerun = lambda: None  # No-op for Streamlit 1.30+
     st.info("Logged out. Please refresh the page.")
     st.stop()
 
@@ -239,16 +224,16 @@ elif view == "Find Matches":
         if matches:
             st.subheader("Matching Rides:")
             for ride, ex_d in matches:
-
                 st.write(f"🚗 {ride['origin']} → {ride['destination']} at {ride['departure']}")
                 st.write(f"   Extra distance: {ex_d:.1f} km (max {ride.get('max_extra_km')})")
-        else
-
+        else:
             st.warning("No suitable matches found.")
 
 # ---------- Debug ----------
 elif view == "Debug":
     st.title("Debug Info")
     st.json({"user": st.session_state.user})
-    if st.button("List rides"): st.json(get_rides())
-    if st.button("List my passengers"): st.json(get_passengers(st.session_state.user.id))
+    if st.button("List rides"):
+        st.json(get_table_rows("rides"))
+    if st.button("List my passengers"):
+        st.json(get_table_rows("passengers", {"user_id": st.session_state.user["id"]}))
