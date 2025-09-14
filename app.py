@@ -51,6 +51,7 @@ def geocode_postcode_cached(postcode: str, retries=2):
             return []
 
 def route_distance_time(start, end):
+    """Returns (distance_km, duration_minutes). Uses simple haversine-based estimate."""
     if not start or not end:
         return None, None
     lat1, lon1 = start
@@ -61,7 +62,7 @@ def route_distance_time(start, end):
     a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
     c = 2 * math.asin(math.sqrt(a))
     dist = R * c
-    dur = dist / 50 * 60  # assume 50 km/h avg
+    dur = dist / 50 * 60  # assume 50 km/h avg speed
     return dist, dur
 
 def haversine_km(a, b):
@@ -97,10 +98,10 @@ def show_login():
                 resp = supabase.auth.sign_in_with_password({"email": email, "password": password})
             else:
                 resp = supabase.auth.sign_up({"email": email, "password": password})
-            if resp.user:
+            if getattr(resp, "user", None):
                 st.session_state.user = normalize_user(resp.user)
-                st.session_state.access_token = resp.session.access_token if resp.session else None
-                st.success(f"{action} successful. You are logged in as {email}.")
+                st.session_state.access_token = resp.session.access_token if getattr(resp, "session", None) else None
+                st.success(f"{action} successful. You are logged in as {resp.user.email}.")
             else:
                 st.error(f"{action} failed: {resp}")
         except Exception as e:
@@ -111,23 +112,35 @@ if not st.session_state.user:
     st.stop()
 
 # ===========================
-# DB HELPERS
+# DB HELPERS (fixed filtering)
 # ===========================
 def insert_table_row(table_name: str, payload: dict):
     try:
         res = supabase.table(table_name).insert(payload).execute()
+        if getattr(res, "status_code", None) not in (200, 201):
+            st.error(f"Insert error: {getattr(res, 'status_code', None)} -> {getattr(res, 'data', res)}")
+            return None
         return res.data
     except Exception as e:
         st.error(f"Insert exception: {e}")
         return None
 
 def get_table_rows(table_name: str, filter_by: dict = None):
+    """
+    Builds a query with .select("*") then chains filters using .eq / .filter.
+    filter_by should be a dict of {column: value} for equality filters.
+    """
     try:
+        query = supabase.table(table_name).select("*")
         if filter_by:
-            res = supabase.table(table_name).select("*", params=filter_by).execute()
-        else:
-            res = supabase.table(table_name).select("*").execute()
-        return res.data
+            for k, v in filter_by.items():
+                # use eq for simple equality; for more complex ops use .filter(column, operator, value)
+                query = query.eq(k, v)
+        res = query.execute()
+        if getattr(res, "status_code", None) != 200:
+            st.error(f"Query error: {getattr(res, 'status_code', None)} -> {getattr(res, 'data', res)}")
+            return []
+        return res.data or []
     except Exception as e:
         st.error(f"Query exception: {e}")
         return []
@@ -135,9 +148,12 @@ def get_table_rows(table_name: str, filter_by: dict = None):
 # ===========================
 # MAIN UI
 # ===========================
-st.sidebar.title(f"Welcome, {st.session_state.user.get('email')}")
+st.sidebar.title(f"Welcome, {st.session_state.user['email']}")
 if st.sidebar.button("Log out"):
-    supabase.auth.sign_out()
+    try:
+        supabase.auth.sign_out()
+    except Exception:
+        pass
     st.session_state.user = None
     st.session_state.access_token = None
     st.info("Logged out. Please refresh the page.")
@@ -170,8 +186,8 @@ if view == "Post Ride":
             "max_extra_min": int(max_extra_min),
             "created_at": datetime.utcnow().isoformat(),
         }
-        insert_table_row("rides", payload)
-        st.success("Ride posted!")
+        if insert_table_row("rides", payload):
+            st.success("Ride posted!")
 
 # ---------- Post Passenger ----------
 elif view == "Post Passenger":
@@ -194,8 +210,8 @@ elif view == "Post Passenger":
             "dest_coords": dest_coords,
             "created_at": datetime.utcnow().isoformat(),
         }
-        insert_table_row("passengers", payload)
-        st.success("Passenger request posted!")
+        if insert_table_row("passengers", payload):
+            st.success("Passenger request posted!")
 
 # ---------- Find Matches ----------
 elif view == "Find Matches":
@@ -210,6 +226,7 @@ elif view == "Find Matches":
         dep_time = st.time_input("Preferred Departure Time", value=datetime.now().time())
         dep_flex = st.number_input("Flexibility (minutes)", 0, 180, 15)
 
+    # Get the passenger(s) posted by current user
     passengers = get_table_rows("passengers", {"user_id": st.session_state.user["id"]})
     rides = get_table_rows("rides")
 
@@ -232,7 +249,10 @@ elif view == "Find Matches":
                 continue
 
             # Time filter
-            ride_dep = datetime.strptime(ride["departure"], "%H:%M:%S").time()
+            try:
+                ride_dep = datetime.strptime(ride["departure"], "%H:%M:%S").time()
+            except Exception:
+                continue
             if not (earliest <= ride_dep <= latest):
                 continue
 
