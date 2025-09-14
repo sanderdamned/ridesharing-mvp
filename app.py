@@ -2,20 +2,31 @@ import streamlit as st
 from supabase import create_client, Client
 from datetime import datetime, time
 from functools import lru_cache
+import requests
 import math
 import time as pytime
-import requests
+from geopy.geocoders import Nominatim
 
 # ===========================
 # CONFIG / INIT
 # ===========================
 st.set_page_config(page_title="Ridesharing MVP", layout="centered")
 
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-ORS_API_KEY = st.secrets.get("ORS_API_KEY")  # optional
+SUPABASE_URL = st.secrets.get("SUPABASE_URL")
+SUPABASE_KEY = st.secrets.get("SUPABASE_KEY")
+ORS_API_KEY = st.secrets.get("ORS_API_KEY")  # optional for route distance
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    st.error("Missing Supabase secrets. Add SUPABASE_URL and SUPABASE_KEY in Streamlit Cloud Secrets.")
+    st.stop()
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+if "user" not in st.session_state:
+    st.session_state.user = None
+
+if "access_token" not in st.session_state:
+    st.session_state.access_token = None
 
 # ===========================
 # HELPERS
@@ -33,17 +44,15 @@ def format_departure(dep):
 
 @lru_cache(maxsize=1000)
 def geocode_postcode_cached(postcode: str, retries=2):
-    if not ORS_API_KEY:
+    if not postcode:
         return []
-    url = "https://api.openrouteservice.org/geocode/search"
-    params = {"api_key": ORS_API_KEY, "text": postcode, "boundary.country": "NL"}
+    geolocator = Nominatim(user_agent="rideshare-app")
     for attempt in range(retries + 1):
         try:
-            r = requests.get(url, params=params, timeout=5)
-            r.raise_for_status()
-            data = r.json()
-            coords = data["features"][0]["geometry"]["coordinates"]  # [lon, lat]
-            return [float(coords[1]), float(coords[0])]
+            location = geolocator.geocode(f"{postcode}, Netherlands", timeout=10)
+            if location:
+                return [location.latitude, location.longitude]
+            return []
         except Exception:
             if attempt < retries:
                 pytime.sleep(1)
@@ -51,7 +60,7 @@ def geocode_postcode_cached(postcode: str, retries=2):
             return []
 
 def route_distance_time(start, end):
-    if not ORS_API_KEY:
+    if not ORS_API_KEY or not start or not end:
         return None, None
     try:
         url = "https://api.openrouteservice.org/v2/directions/driving-car"
@@ -76,38 +85,35 @@ def haversine_km(a, b):
     return 2 * R * math.asin(math.sqrt(h))
 
 # ===========================
-# SESSION / AUTH
+# AUTH
 # ===========================
-if "user" not in st.session_state:
+def sign_up(email, password):
+    try:
+        user = supabase.auth.sign_up(email=email, password=password)
+        st.success("Registration successful. Please log in.")
+        return user
+    except Exception as e:
+        st.error(f"Sign up error: {e}")
+
+def sign_in(email, password):
+    try:
+        user = supabase.auth.sign_in(email=email, password=password)
+        if user.user:
+            st.session_state.user = user.user
+            st.session_state.access_token = user.session.access_token
+        return user
+    except Exception as e:
+        st.error(f"Login error: {e}")
+
+def sign_out():
     st.session_state.user = None
-
-def show_login():
-    st.title("Login or Register")
-    email = st.text_input("Email")
-    password = st.text_input("Password", type="password")
-    action = st.radio("Action", ["Login", "Register"])
-    if st.button(action):
-        try:
-            if action == "Login":
-                result = supabase.auth.sign_in_with_password({"email": email, "password": password})
-            else:
-                result = supabase.auth.sign_up({"email": email, "password": password})
-                st.success("Registration successful. Please log in.")
-                return
-            st.session_state.user = result.user
-            st.experimental_rerun()
-        except Exception as e:
-            st.error(f"Auth error: {e}")
-
-if not st.session_state.user:
-    show_login()
-    st.stop()
-
-st.sidebar.title(f"Welcome, {st.session_state.user.email}")
-if st.sidebar.button("Log out"):
+    st.session_state.access_token = None
     supabase.auth.sign_out()
-    st.session_state.user = None
-    st.experimental_rerun()
+
+def normalize_user(user_obj):
+    if not user_obj:
+        return None
+    return {"id": user_obj.id, "email": user_obj.email}
 
 # ===========================
 # DATABASE HELPERS
@@ -116,7 +122,7 @@ def insert_table_row(table_name: str, payload: dict):
     try:
         res = supabase.table(table_name).insert(payload).execute()
         if res.error:
-            raise Exception(res.error.message)
+            raise Exception(res.error)
         return res.data
     except Exception as e:
         st.error(f"Insert error: {e}")
@@ -125,7 +131,9 @@ def insert_table_row(table_name: str, payload: dict):
 def get_rides():
     try:
         res = supabase.table("rides").select("*").execute()
-        return res.data or []
+        if res.error:
+            raise Exception(res.error)
+        return res.data
     except Exception as e:
         st.error(f"Failed fetching rides: {e}")
         return []
@@ -136,14 +144,38 @@ def get_passengers(user_id=None):
         if user_id:
             query = query.eq("user_id", user_id)
         res = query.execute()
-        return res.data or []
+        if res.error:
+            raise Exception(res.error)
+        return res.data
     except Exception as e:
         st.error(f"Failed fetching passengers: {e}")
         return []
 
 # ===========================
+# LOGIN / REGISTER UI
+# ===========================
+def show_login():
+    st.title("Login or Register")
+    email = st.text_input("Email")
+    password = st.text_input("Password", type="password")
+    action = st.radio("Action", ["Login", "Register"])
+    if st.button(action):
+        if action == "Login":
+            sign_in(email, password)
+        else:
+            sign_up(email, password)
+
+if not st.session_state.user:
+    show_login()
+    st.stop()
+
+# ===========================
 # MAIN UI
 # ===========================
+st.sidebar.title(f"Welcome, {st.session_state.user.email}")
+if st.sidebar.button("Log out"):
+    sign_out()
+
 view = st.sidebar.radio("Go to", ["Post Ride", "Post Passenger", "Find Matches", "Debug"])
 
 # ---------- Post Ride ----------
@@ -171,8 +203,8 @@ if view == "Post Ride":
             "max_extra_min": int(max_extra_min),
             "created_at": datetime.utcnow().isoformat(),
         }
-        if insert_table_row("rides", payload):
-            st.success("Ride posted!")
+        res = insert_table_row("rides", payload)
+        if res: st.success("Ride posted!")
 
 # ---------- Post Passenger ----------
 elif view == "Post Passenger":
@@ -195,8 +227,8 @@ elif view == "Post Passenger":
             "dest_coords": dest_coords,
             "created_at": datetime.utcnow().isoformat(),
         }
-        if insert_table_row("passengers", payload):
-            st.success("Passenger request posted!")
+        res = insert_table_row("passengers", payload)
+        if res: st.success("Passenger request posted!")
 
 # ---------- Find Matches ----------
 elif view == "Find Matches":
@@ -229,7 +261,8 @@ elif view == "Find Matches":
             for ride, ex_d in matches:
                 st.write(f"🚗 {ride['origin']} → {ride['destination']} at {ride['departure']}")
                 st.write(f"   Extra distance: {ex_d:.1f} km (max {ride.get('max_extra_km')})")
-        else:
+        else
+
             st.warning("No suitable matches found.")
 
 # ---------- Debug ----------
