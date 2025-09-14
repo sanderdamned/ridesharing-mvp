@@ -10,16 +10,22 @@ import time as pytime
 # ===========================
 st.set_page_config(page_title="Ridesharing MVP", layout="centered")
 
-NHOST_URL = st.secrets.get("NHOST_URL")  # e.g., https://xxxx.nhost.app
+# Prefer explicit URLs if set in secrets
+AUTH_URL = st.secrets.get("NHOST_AUTH_URL")
+GRAPHQL_URL = st.secrets.get("NHOST_GRAPHQL_URL")
 NHOST_KEY = st.secrets.get("NHOST_ADMIN_SECRET")
 ORS_API_KEY = st.secrets.get("ORS_API_KEY")  # optional
 
-if not NHOST_URL or not NHOST_KEY:
-    st.error("Missing Nhost secrets. Add NHOST_URL and NHOST_ADMIN_SECRET in Streamlit Cloud Secrets.")
-    st.stop()
+# Backward compatibility: build from NHOST_URL if given
+if not AUTH_URL or not GRAPHQL_URL:
+    NHOST_URL = st.secrets.get("NHOST_URL")
+    if NHOST_URL:
+        AUTH_URL = f"{NHOST_URL}/v1/auth"
+        GRAPHQL_URL = f"{NHOST_URL}/v1/graphql"
 
-GRAPHQL_URL = f"{NHOST_URL}/v1/graphql"
-AUTH_URL = f"{NHOST_URL}/v1/auth"
+if not AUTH_URL or not GRAPHQL_URL or not NHOST_KEY:
+    st.error("Missing Nhost secrets. Please add NHOST_AUTH_URL, NHOST_GRAPHQL_URL and NHOST_ADMIN_SECRET in Streamlit Cloud Secrets.")
+    st.stop()
 
 # ===========================
 # HELPERS
@@ -166,7 +172,6 @@ def insert_table_row(table_name: str, payload: dict):
         else:
             payload_copy[key] = "[]"
 
-    # FIXED: correct indentation
     fields = ", ".join(
         f"{k}: {v}" if isinstance(v, (int, float)) else f'{k}: "{v}"'
         for k, v in payload_copy.items()
@@ -186,7 +191,6 @@ def insert_table_row(table_name: str, payload: dict):
     except Exception as e:
         st.error(f"Insert error: {e}")
         return None
-
 
 def get_rides():
     query = """
