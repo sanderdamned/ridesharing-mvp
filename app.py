@@ -1,6 +1,6 @@
 import streamlit as st
 from supabase import create_client, Client
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from functools import lru_cache
 import math
 import time as pytime
@@ -53,7 +53,6 @@ def geocode_postcode_cached(postcode: str, retries=2):
 def route_distance_time(start, end):
     if not start or not end:
         return None, None
-    # Simple haversine
     lat1, lon1 = start
     lat2, lon2 = end
     R = 6371.0
@@ -64,6 +63,15 @@ def route_distance_time(start, end):
     dist = R * c
     dur = dist / 50 * 60  # assume 50 km/h avg
     return dist, dur
+
+def haversine_km(a, b):
+    lat1, lon1 = map(math.radians, a)
+    lat2, lon2 = map(math.radians, b)
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    R = 6371.0
+    h = math.sin(dlat/2)**2 + math.cos(lat1)*math.cos(lat2)*math.sin(dlon/2)**2
+    return 2 * R * math.asin(math.sqrt(h))
 
 # ===========================
 # AUTH
@@ -76,10 +84,7 @@ if "access_token" not in st.session_state:
 def normalize_user(user_obj):
     if not user_obj:
         return None
-    return {
-        "id": getattr(user_obj, "id", None),
-        "email": getattr(user_obj, "email", None),
-    }
+    return {"id": getattr(user_obj, "id", None), "email": getattr(user_obj, "email", None)}
 
 def show_login():
     st.title("Login or Register")
@@ -95,7 +100,7 @@ def show_login():
             if resp.user:
                 st.session_state.user = normalize_user(resp.user)
                 st.session_state.access_token = resp.session.access_token if resp.session else None
-                st.success(f"{action} successful. You are logged in as {resp.user.email}.")
+                st.success(f"{action} successful. You are logged in as {email}.")
             else:
                 st.error(f"{action} failed: {resp}")
         except Exception as e:
@@ -118,11 +123,10 @@ def insert_table_row(table_name: str, payload: dict):
 
 def get_table_rows(table_name: str, filter_by: dict = None):
     try:
-        query = supabase.table(table_name)
         if filter_by:
-            for k, v in filter_by.items():
-                query = query.eq(k, v)
-        res = query.select("*").execute()
+            res = supabase.table(table_name).select("*", params=filter_by).execute()
+        else:
+            res = supabase.table(table_name).select("*").execute()
         return res.data
     except Exception as e:
         st.error(f"Query exception: {e}")
@@ -131,7 +135,7 @@ def get_table_rows(table_name: str, filter_by: dict = None):
 # ===========================
 # MAIN UI
 # ===========================
-st.sidebar.title(f"Welcome, {st.session_state.user['email']}")
+st.sidebar.title(f"Welcome, {st.session_state.user.get('email')}")
 if st.sidebar.button("Log out"):
     supabase.auth.sign_out()
     st.session_state.user = None
@@ -196,29 +200,65 @@ elif view == "Post Passenger":
 # ---------- Find Matches ----------
 elif view == "Find Matches":
     st.title("Find Matches (Detour-based)")
+
+    # Passenger filter settings
+    with st.expander("🔍 Search Filters"):
+        dep_postcode = st.text_input("Departure Postcode (NL)")
+        dep_radius = st.number_input("Departure radius (km)", 0.0, 50.0, 5.0)
+        arr_postcode = st.text_input("Arrival Postcode (NL)")
+        arr_radius = st.number_input("Arrival radius (km)", 0.0, 50.0, 5.0)
+        dep_time = st.time_input("Preferred Departure Time", value=datetime.now().time())
+        dep_flex = st.number_input("Flexibility (minutes)", 0, 180, 15)
+
     passengers = get_table_rows("passengers", {"user_id": st.session_state.user["id"]})
     rides = get_table_rows("rides")
+
     if not passengers:
         st.info("You need to post a passenger request first.")
     else:
         passenger = passengers[-1]
         st.write(f"Passenger: {passenger.get('origin')} → {passenger.get('destination')}")
+
         matches = []
+        passenger_dep = datetime.combine(datetime.today(), dep_time)
+        earliest = (passenger_dep - timedelta(minutes=dep_flex)).time()
+        latest = (passenger_dep + timedelta(minutes=dep_flex)).time()
+
+        dep_coords = geocode_postcode_cached(dep_postcode) if dep_postcode else None
+        arr_coords = geocode_postcode_cached(arr_postcode) if arr_postcode else None
+
         for ride in rides:
             if not ride.get("origin_coords") or not ride.get("dest_coords"):
                 continue
-            base_dist, _ = route_distance_time(ride["origin_coords"], ride["dest_coords"])
-            if base_dist is None:
+
+            # Time filter
+            ride_dep = datetime.strptime(ride["departure"], "%H:%M:%S").time()
+            if not (earliest <= ride_dep <= latest):
                 continue
+
+            # Departure proximity filter
+            if dep_coords:
+                if haversine_km(dep_coords, ride["origin_coords"]) > dep_radius:
+                    continue
+
+            # Arrival proximity filter
+            if arr_coords:
+                if haversine_km(arr_coords, ride["dest_coords"]) > arr_radius:
+                    continue
+
+            # Detour logic
+            base_dist, _ = route_distance_time(ride["origin_coords"], ride["dest_coords"])
             d1, _ = route_distance_time(ride["origin_coords"], passenger["origin_coords"])
             d2, _ = route_distance_time(passenger["origin_coords"], passenger["dest_coords"])
             d3, _ = route_distance_time(passenger["dest_coords"], ride["dest_coords"])
-            if None in (d1, d2, d3):
+            if None in (base_dist, d1, d2, d3):
                 continue
             detour_dist = d1 + d2 + d3
             extra_dist = detour_dist - base_dist
+
             if extra_dist <= ride.get("max_extra_km", 999):
                 matches.append((ride, extra_dist))
+
         if matches:
             st.subheader("Matching Rides:")
             for ride, ex_d in matches:
@@ -231,7 +271,5 @@ elif view == "Find Matches":
 elif view == "Debug":
     st.title("Debug Info")
     st.json({"user": st.session_state.user})
-    if st.button("List rides"):
-        st.json(get_table_rows("rides"))
-    if st.button("List my passengers"):
-        st.json(get_table_rows("passengers", {"user_id": st.session_state.user["id"]}))
+    st.json({"rides": get_table_rows("rides")})
+    st.json({"passengers": get_table_rows("passengers")})
