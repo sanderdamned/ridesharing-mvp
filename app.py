@@ -93,7 +93,7 @@ def nhost_sign_in(email, password):
     return r.json()
 
 def nhost_sign_out(access_token):
-    url = f"{NHOST_AUTH_URL}/signout"
+    url = f"{NHOST_AUTH_URL}/sign-out"
     headers = {"Authorization": f"Bearer {access_token}"}
     r = requests.post(url, headers=headers)
     r.raise_for_status()
