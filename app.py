@@ -1,23 +1,21 @@
 import streamlit as st
-import requests
+from supabase import create_client, Client
 from datetime import datetime, time
 from functools import lru_cache
 import math
 import time as pytime
+import requests
 
 # ===========================
 # CONFIG / INIT
 # ===========================
 st.set_page_config(page_title="Ridesharing MVP", layout="centered")
 
-NHOST_AUTH_URL = st.secrets.get("NHOST_AUTH_URL")
-NHOST_GRAPHQL_URL = st.secrets.get("NHOST_GRAPHQL_URL")
-NHOST_KEY = st.secrets.get("NHOST_ADMIN_SECRET")
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 ORS_API_KEY = st.secrets.get("ORS_API_KEY")  # optional
 
-if not NHOST_AUTH_URL or not NHOST_GRAPHQL_URL or not NHOST_KEY:
-    st.error("Missing Nhost secrets. Add NHOST_AUTH_URL, NHOST_GRAPHQL_URL, and NHOST_ADMIN_SECRET in Streamlit Cloud Secrets.")
-    st.stop()
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ===========================
 # HELPERS
@@ -78,50 +76,10 @@ def haversine_km(a, b):
     return 2 * R * math.asin(math.sqrt(h))
 
 # ===========================
-# NHOST AUTH / GRAPHQL
-# ===========================
-def nhost_sign_up(email, password):
-    url = f"{NHOST_AUTH_URL}/sign-up/email-password"
-    r = requests.post(url, json={"email": email, "password": password})
-    r.raise_for_status()
-    return r.json()
-
-def nhost_sign_in(email, password):
-    url = f"{NHOST_AUTH_URL}/sign-in/email-password"
-    r = requests.post(url, json={"email": email, "password": password})
-    r.raise_for_status()
-    return r.json()
-
-def nhost_sign_out(access_token):
-    url = f"{NHOST_AUTH_URL}/sign-out"
-    headers = {"Authorization": f"Bearer {access_token}"}
-    r = requests.post(url, headers=headers)
-    r.raise_for_status()
-    return r.ok
-
-def nhost_graphql(query, variables=None, admin_secret=None):
-    headers = {"x-hasura-admin-secret": admin_secret} if admin_secret else {}
-    json_payload = {"query": query}
-    if variables:
-        json_payload["variables"] = variables
-    r = requests.post(NHOST_GRAPHQL_URL, json=json_payload, headers=headers)
-    r.raise_for_status()
-    return r.json()
-
-# ===========================
-# SESSION
+# SESSION / AUTH
 # ===========================
 if "user" not in st.session_state:
     st.session_state.user = None
-if "access_token" not in st.session_state:
-    st.session_state.access_token = None
-
-def normalize_user(user_obj):
-    if not user_obj:
-        return None
-    uid = user_obj.get("id")
-    email = user_obj.get("email")
-    return {"id": uid, "email": email}
 
 def show_login():
     st.title("Login or Register")
@@ -131,19 +89,13 @@ def show_login():
     if st.button(action):
         try:
             if action == "Login":
-                resp = nhost_sign_in(email, password)
-                user = resp.get("user")
-                st.session_state.access_token = resp.get("session", {}).get("access_token")
+                result = supabase.auth.sign_in_with_password({"email": email, "password": password})
             else:
-                resp = nhost_sign_up(email, password)
-                user = resp.get("user")
+                result = supabase.auth.sign_up({"email": email, "password": password})
                 st.success("Registration successful. Please log in.")
                 return
-            st.session_state.user = normalize_user(user)
-            if st.session_state.user:
-                st.experimental_rerun()
-            else:
-                st.error("Auth failed. Check credentials.")
+            st.session_state.user = result.user
+            st.experimental_rerun()
         except Exception as e:
             st.error(f"Auth error: {e}")
 
@@ -151,69 +103,40 @@ if not st.session_state.user:
     show_login()
     st.stop()
 
+st.sidebar.title(f"Welcome, {st.session_state.user.email}")
+if st.sidebar.button("Log out"):
+    supabase.auth.sign_out()
+    st.session_state.user = None
+    st.experimental_rerun()
+
 # ===========================
-# DB HELPERS
+# DATABASE HELPERS
 # ===========================
 def insert_table_row(table_name: str, payload: dict):
-    def format_array(arr):
-        return f"[{','.join(str(x) for x in arr)}]" if arr else "[]"
-
-    payload_copy = payload.copy()
-    for key in ["origin_coords", "dest_coords"]:
-        if key in payload_copy and payload_copy[key]:
-            payload_copy[key] = format_array(payload_copy[key])
-        else:
-            payload_copy[key] = "[]"
-
-    fields = ", ".join(
-        f"{k}: {v}" if isinstance(v, (int, float)) else f'{k}: "{v}"'
-        for k, v in payload_copy.items()
-    )
-    query = f"""
-    mutation {{
-        insert_{table_name}(objects: {{ {fields} }}) {{
-            returning {{ id }}
-        }}
-    }}
-    """
     try:
-        res = nhost_graphql(query, admin_secret=NHOST_KEY)
-        if "errors" in res:
-            raise Exception(res["errors"])
-        return res.get("data")
+        res = supabase.table(table_name).insert(payload).execute()
+        if res.error:
+            raise Exception(res.error.message)
+        return res.data
     except Exception as e:
         st.error(f"Insert error: {e}")
         return None
 
 def get_rides():
-    query = """
-    query {
-        rides {
-            id user_id origin destination departure
-            origin_coords dest_coords max_extra_km max_extra_min
-        }
-    }
-    """
     try:
-        res = nhost_graphql(query, admin_secret=NHOST_KEY)
-        return res.get("data", {}).get("rides", [])
+        res = supabase.table("rides").select("*").execute()
+        return res.data or []
     except Exception as e:
         st.error(f"Failed fetching rides: {e}")
         return []
 
 def get_passengers(user_id=None):
-    where_clause = f'(where: {{user_id: {{_eq: "{user_id}"}}}})' if user_id else ""
-    query = f"""
-    query {{
-        passengers{where_clause} {{
-            id user_id origin destination departure
-            origin_coords dest_coords
-        }}
-    }}
-    """
     try:
-        res = nhost_graphql(query, admin_secret=NHOST_KEY)
-        return res.get("data", {}).get("passengers", [])
+        query = supabase.table("passengers").select("*")
+        if user_id:
+            query = query.eq("user_id", user_id)
+        res = query.execute()
+        return res.data or []
     except Exception as e:
         st.error(f"Failed fetching passengers: {e}")
         return []
@@ -221,12 +144,6 @@ def get_passengers(user_id=None):
 # ===========================
 # MAIN UI
 # ===========================
-st.sidebar.title(f"Welcome, {st.session_state.user.get('email')}")
-if st.sidebar.button("Log out"):
-    st.session_state.user = None
-    st.session_state.access_token = None
-    st.experimental_rerun()
-
 view = st.sidebar.radio("Go to", ["Post Ride", "Post Passenger", "Find Matches", "Debug"])
 
 # ---------- Post Ride ----------
@@ -244,7 +161,7 @@ if view == "Post Ride":
         origin_coords = geocode_postcode_cached(origin)
         dest_coords = geocode_postcode_cached(destination)
         payload = {
-            "user_id": st.session_state.user["id"],
+            "user_id": st.session_state.user.id,
             "origin": origin.strip().upper(),
             "destination": destination.strip().upper(),
             "departure": format_departure(departure),
@@ -254,8 +171,8 @@ if view == "Post Ride":
             "max_extra_min": int(max_extra_min),
             "created_at": datetime.utcnow().isoformat(),
         }
-        res = insert_table_row("rides", payload)
-        if res: st.success("Ride posted!")
+        if insert_table_row("rides", payload):
+            st.success("Ride posted!")
 
 # ---------- Post Passenger ----------
 elif view == "Post Passenger":
@@ -270,7 +187,7 @@ elif view == "Post Passenger":
         origin_coords = geocode_postcode_cached(origin)
         dest_coords = geocode_postcode_cached(destination)
         payload = {
-            "user_id": st.session_state.user["id"],
+            "user_id": st.session_state.user.id,
             "origin": origin.strip().upper(),
             "destination": destination.strip().upper(),
             "departure": format_departure(departure),
@@ -278,19 +195,19 @@ elif view == "Post Passenger":
             "dest_coords": dest_coords,
             "created_at": datetime.utcnow().isoformat(),
         }
-        res = insert_table_row("passengers", payload)
-        if res: st.success("Passenger request posted!")
+        if insert_table_row("passengers", payload):
+            st.success("Passenger request posted!")
 
 # ---------- Find Matches ----------
 elif view == "Find Matches":
     st.title("Find Matches (Detour-based)")
-    passengers = get_passengers(st.session_state.user["id"])
+    passengers = get_passengers(st.session_state.user.id)
     rides = get_rides()
     if not passengers:
         st.info("You need to post a passenger request first.")
     else:
         passenger = passengers[-1]
-        st.write(f"Passenger: {passenger.get('origin')} → {passenger.get('destination')}")
+        st.write(f"Passenger: {passenger['origin']} → {passenger['destination']}")
         matches = []
         for ride in rides:
             if not ride.get("origin_coords") or not ride.get("dest_coords"):
@@ -310,7 +227,7 @@ elif view == "Find Matches":
         if matches:
             st.subheader("Matching Rides:")
             for ride, ex_d in matches:
-                st.write(f"🚗 {ride.get('origin')} → {ride.get('destination')} at {ride.get('departure')}")
+                st.write(f"🚗 {ride['origin']} → {ride['destination']} at {ride['departure']}")
                 st.write(f"   Extra distance: {ex_d:.1f} km (max {ride.get('max_extra_km')})")
         else:
             st.warning("No suitable matches found.")
@@ -318,6 +235,6 @@ elif view == "Find Matches":
 # ---------- Debug ----------
 elif view == "Debug":
     st.title("Debug Info")
-    st.json(st.session_state.user)
+    st.json({"user": st.session_state.user})
     if st.button("List rides"): st.json(get_rides())
-    if st.button("List my passengers"): st.json(get_passengers(st.session_state.user["id"]))
+    if st.button("List my passengers"): st.json(get_passengers(st.session_state.user.id))
