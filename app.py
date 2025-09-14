@@ -53,6 +53,7 @@ def geocode_postcode_cached(postcode: str, retries=2):
 def route_distance_time(start, end):
     if not start or not end:
         return None, None
+    # Simple haversine
     lat1, lon1 = start
     lat2, lon2 = end
     R = 6371.0
@@ -61,7 +62,7 @@ def route_distance_time(start, end):
     a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
     c = 2 * math.asin(math.sqrt(a))
     dist = R * c
-    dur = dist / 50 * 60  # assume 50 km/h avg speed
+    dur = dist / 50 * 60  # assume 50 km/h avg
     return dist, dur
 
 # ===========================
@@ -75,7 +76,10 @@ if "access_token" not in st.session_state:
 def normalize_user(user_obj):
     if not user_obj:
         return None
-    return {"id": user_obj.get("id"), "email": user_obj.get("email")}
+    return {
+        "id": getattr(user_obj, "id", None),
+        "email": getattr(user_obj, "email", None),
+    }
 
 def show_login():
     st.title("Login or Register")
@@ -91,7 +95,7 @@ def show_login():
             if resp.user:
                 st.session_state.user = normalize_user(resp.user)
                 st.session_state.access_token = resp.session.access_token if resp.session else None
-                st.success(f"{action} successful. You are logged in as {email}.")
+                st.success(f"{action} successful. You are logged in as {resp.user.email}.")
             else:
                 st.error(f"{action} failed: {resp}")
         except Exception as e:
@@ -107,9 +111,6 @@ if not st.session_state.user:
 def insert_table_row(table_name: str, payload: dict):
     try:
         res = supabase.table(table_name).insert(payload).execute()
-        if res.status_code not in (200, 201):
-            st.error(f"Insert error: {res.status_code} -> {res.data}")
-            return None
         return res.data
     except Exception as e:
         st.error(f"Insert exception: {e}")
@@ -122,9 +123,6 @@ def get_table_rows(table_name: str, filter_by: dict = None):
             for k, v in filter_by.items():
                 query = query.eq(k, v)
         res = query.select("*").execute()
-        if res.status_code != 200:
-            st.error(f"Query error: {res.status_code} -> {res.data}")
-            return []
         return res.data
     except Exception as e:
         st.error(f"Query exception: {e}")
@@ -133,7 +131,7 @@ def get_table_rows(table_name: str, filter_by: dict = None):
 # ===========================
 # MAIN UI
 # ===========================
-st.sidebar.title(f"Welcome, {st.session_state.user.get('email')}")
+st.sidebar.title(f"Welcome, {st.session_state.user['email']}")
 if st.sidebar.button("Log out"):
     supabase.auth.sign_out()
     st.session_state.user = None
