@@ -118,22 +118,31 @@ if not st.session_state.user:
 # DB HELPERS
 # ===========================
 def insert_table_row(table_name: str, payload: dict):
-    res = supabase.table(table_name).insert(payload).execute()
-    if res.status_code not in (200, 201):
-        st.error(f"Insert error: {res.data}")
+    try:
+        res = supabase.table(table_name).insert(payload).execute()
+        if res.status_code not in (200, 201):
+            st.error(f"Insert error: {res.status_code} -> {res.data}")
+            return None
+        return res.data
+    except Exception as e:
+        st.error(f"Insert exception: {e}")
         return None
-    return res.data
 
 def get_table_rows(table_name: str, filter_by: dict = None):
-    query = supabase.table(table_name)
-    if filter_by:
-        for k, v in filter_by.items():
-            query = query.eq(k, v)
-    res = query.select("*").execute()
-    if res.status_code != 200:
-        st.error(f"Query error: {res.data}")
+    try:
+        query = supabase.table(table_name)
+        if filter_by:
+            for k, v in filter_by.items():
+                query = query.eq(k, v)
+        res = query.select("*").execute()
+        if res.status_code != 200:
+            st.error(f"Query error: {res.status_code} -> {res.data}")
+            return []
+        return res.data
+    except Exception as e:
+        st.error(f"Query exception: {e}")
         return []
-    return res.data
+
 
 # ===========================
 # MAIN UI
