@@ -10,21 +10,13 @@ import time as pytime
 # ===========================
 st.set_page_config(page_title="Ridesharing MVP", layout="centered")
 
-# Prefer explicit URLs if set in secrets
-AUTH_URL = st.secrets.get("NHOST_AUTH_URL")
-GRAPHQL_URL = st.secrets.get("NHOST_GRAPHQL_URL")
+NHOST_AUTH_URL = st.secrets.get("NHOST_AUTH_URL")
+NHOST_GRAPHQL_URL = st.secrets.get("NHOST_GRAPHQL_URL")
 NHOST_KEY = st.secrets.get("NHOST_ADMIN_SECRET")
 ORS_API_KEY = st.secrets.get("ORS_API_KEY")  # optional
 
-# Backward compatibility: build from NHOST_URL if given
-if not AUTH_URL or not GRAPHQL_URL:
-    NHOST_URL = st.secrets.get("NHOST_URL")
-    if NHOST_URL:
-        AUTH_URL = f"{NHOST_URL}/v1/auth"
-        GRAPHQL_URL = f"{NHOST_URL}/v1/graphql"
-
-if not AUTH_URL or not GRAPHQL_URL or not NHOST_KEY:
-    st.error("Missing Nhost secrets. Please add NHOST_AUTH_URL, NHOST_GRAPHQL_URL and NHOST_ADMIN_SECRET in Streamlit Cloud Secrets.")
+if not NHOST_AUTH_URL or not NHOST_GRAPHQL_URL or not NHOST_KEY:
+    st.error("Missing Nhost secrets. Add NHOST_AUTH_URL, NHOST_GRAPHQL_URL, and NHOST_ADMIN_SECRET in Streamlit Cloud Secrets.")
     st.stop()
 
 # ===========================
@@ -89,19 +81,19 @@ def haversine_km(a, b):
 # NHOST AUTH / GRAPHQL
 # ===========================
 def nhost_sign_up(email, password):
-    url = f"{AUTH_URL}/signup/email-password"
+    url = f"{NHOST_AUTH_URL}/signup/email-password"
     r = requests.post(url, json={"email": email, "password": password})
     r.raise_for_status()
     return r.json()
 
 def nhost_sign_in(email, password):
-    url = f"{AUTH_URL}/signin/email-password"
+    url = f"{NHOST_AUTH_URL}/signin/email-password"
     r = requests.post(url, json={"email": email, "password": password})
     r.raise_for_status()
     return r.json()
 
 def nhost_sign_out(refresh_token):
-    url = f"{AUTH_URL}/signout"
+    url = f"{NHOST_AUTH_URL}/signout"
     headers = {"Authorization": f"Bearer {refresh_token}"}
     r = requests.post(url, headers=headers)
     return r.ok
@@ -111,7 +103,7 @@ def nhost_graphql(query, variables=None, admin_secret=None):
     json_payload = {"query": query}
     if variables:
         json_payload["variables"] = variables
-    r = requests.post(GRAPHQL_URL, json=json_payload, headers=headers)
+    r = requests.post(NHOST_GRAPHQL_URL, json=json_payload, headers=headers)
     r.raise_for_status()
     return r.json()
 
