@@ -92,10 +92,11 @@ def nhost_sign_in(email, password):
     r.raise_for_status()
     return r.json()
 
-def nhost_sign_out(refresh_token):
+def nhost_sign_out(access_token):
     url = f"{NHOST_AUTH_URL}/signout"
-    headers = {"Authorization": f"Bearer {refresh_token}"}
+    headers = {"Authorization": f"Bearer {access_token}"}
     r = requests.post(url, headers=headers)
+    r.raise_for_status()
     return r.ok
 
 def nhost_graphql(query, variables=None, admin_secret=None):
