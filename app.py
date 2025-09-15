@@ -117,13 +117,15 @@ if not st.session_state.user:
 def insert_table_row(table_name: str, payload: dict):
     try:
         res = supabase.table(table_name).insert(payload).execute()
-        if getattr(res, "status_code", None) not in (200, 201):
-            st.error(f"Insert error: {getattr(res, 'status_code', None)} -> {getattr(res, 'data', res)}")
+        # new client returns `res.data` or raises
+        if not getattr(res, "data", None):
+            st.error(f"Insert error: {res}")
             return None
         return res.data
     except Exception as e:
         st.error(f"Insert exception: {e}")
         return None
+
 
 def get_table_rows(table_name: str, filter_by: dict = None):
     """
@@ -134,12 +136,9 @@ def get_table_rows(table_name: str, filter_by: dict = None):
         query = supabase.table(table_name).select("*")
         if filter_by:
             for k, v in filter_by.items():
-                # use eq for simple equality; for more complex ops use .filter(column, operator, value)
                 query = query.eq(k, v)
         res = query.execute()
-        if getattr(res, "status_code", None) != 200:
-            st.error(f"Query error: {getattr(res, 'status_code', None)} -> {getattr(res, 'data', res)}")
-            return []
+        # ✅ Just return data directly
         return res.data or []
     except Exception as e:
         st.error(f"Query exception: {e}")
