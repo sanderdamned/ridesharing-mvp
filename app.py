@@ -13,7 +13,6 @@ st.set_page_config(page_title="Ridesharing MVP", layout="centered")
 
 SUPABASE_URL = st.secrets.get("SUPABASE_URL")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY")
-ORS_API_KEY = st.secrets.get("ORS_API_KEY")  # optional
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     st.error("Missing Supabase secrets. Add SUPABASE_URL and SUPABASE_KEY in Streamlit Cloud Secrets.")
@@ -50,22 +49,9 @@ def geocode_postcode_cached(postcode: str, retries=2):
                 continue
             return []
 
-def route_distance_time(start, end):
-    """Returns (distance_km, duration_minutes). Uses simple haversine-based estimate."""
-    if not start or not end:
-        return None, None
-    lat1, lon1 = start
-    lat2, lon2 = end
-    R = 6371.0
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
-    c = 2 * math.asin(math.sqrt(a))
-    dist = R * c
-    dur = dist / 50 * 60  # assume 50 km/h avg speed
-    return dist, dur
-
 def haversine_km(a, b):
+    if not a or not b:
+        return 9999
     lat1, lon1 = map(math.radians, a)
     lat2, lon2 = map(math.radians, b)
     dlat = lat2 - lat1
@@ -117,15 +103,12 @@ if not st.session_state.user:
 def insert_table_row(table_name: str, payload: dict):
     try:
         res = supabase.table(table_name).insert(payload).execute()
-        if not getattr(res, "data", None):
-            st.error(f"Insert error: {res}")
-            return None
-        return res.data
+        return res.data if getattr(res, "data", None) else []
     except Exception as e:
         st.error(f"Insert exception: {e}")
-        return None
+        return []
 
-def update_table_row(table_name: str, row_id: str, payload: dict):  # NEW
+def update_table_row(table_name: str, row_id: str, payload: dict):
     try:
         res = supabase.table(table_name).update(payload).eq("id", row_id).execute()
         return res.data
@@ -140,36 +123,89 @@ def get_table_rows(table_name: str, filter_by: dict = None):
             for k, v in filter_by.items():
                 query = query.eq(k, v)
         res = query.execute()
-        return res.data or []
+        return res.data if getattr(res, "data", None) else []
     except Exception as e:
         st.error(f"Query exception: {e}")
         return []
 
 # ===========================
+# MATCH LOGIC
+# ===========================
+def check_for_matches(new_ride):
+    rides = get_table_rows("rides", {"ride_date": new_ride["ride_date"]})
+    for ride in rides:
+        if ride["id"] == new_ride["id"]:
+            continue
+        if new_ride["role"] == ride["role"]:
+            continue
+
+        driver = new_ride if new_ride["role"] == "driver" else ride
+        passenger = new_ride if new_ride["role"] == "passenger" else ride
+
+        dep_driver = datetime.strptime(driver["departure"], "%H:%M:%S")
+        dep_pass = datetime.strptime(passenger["departure"], "%H:%M:%S")
+        if not (dep_driver - timedelta(minutes=15) <= dep_pass <= dep_driver + timedelta(minutes=5)):
+            continue
+
+        if haversine_km(driver["origin_coords"], passenger["origin_coords"]) > driver.get("max_extra_km", 999):
+            continue
+        if haversine_km(driver["dest_coords"], passenger["dest_coords"]) > driver.get("max_extra_km", 999):
+            continue
+
+        insert_table_row("matches", {
+            "driver_id": driver["id"],
+            "passenger_id": passenger["id"],
+            "status": "requested",
+            "created_at": datetime.utcnow().isoformat(),
+        })
+        st.info("🚀 Match found! Check 'My Matches' to confirm.")
+
+# ===========================
 # MAIN UI
 # ===========================
-st.sidebar.title(f"Welcome, {st.session_state.user['email']}")
-if st.sidebar.button("Log out"):
-    try:
-        supabase.auth.sign_out()
-    except Exception:
-        pass
-    st.session_state.user = None
-    st.session_state.access_token = None
-    st.info("Logged out. Please refresh the page.")
-    st.stop()
+menu = ["Welcome", "Submit Ride", "My Matches", "Rate"]
+choice = st.sidebar.radio("Menu", menu)
 
-view = st.sidebar.radio("Go to", ["Post Ride", "Post Passenger", "Find Matches", "My Matches", "Rate", "Debug"])
+# ---------- Welcome ----------
+if choice == "Welcome":
+    st.title("Welcome 🎉")
+    profile = get_table_rows("profiles", {"id": st.session_state.user["id"]})
+    if profile:
+        p = profile[0]
+        st.write(f"👤 Name: {p.get('name')}")
+        st.write(f"🚗 Car: {p.get('car_brand')} ({p.get('car_color')})")
+        st.write(f"🎵 Favorite song: {p.get('fav_song')}")
+    else:
+        with st.form("profile_form"):
+            name = st.text_input("Your name")
+            brand = st.text_input("Car brand")
+            color = st.text_input("Car color")
+            song = st.text_input("Favorite car song")
+            submit = st.form_submit_button("Save profile")
+        if submit:
+            insert_table_row("profiles", {
+                "id": st.session_state.user["id"],
+                "name": name,
+                "car_brand": brand,
+                "car_color": color,
+                "fav_song": song,
+            })
+            st.success("Profile saved! Please refresh.")
 
-# ---------- Post Ride ----------
-if view == "Post Ride":
-    st.title("Post a Ride (Driver)")
+# ---------- Submit Ride ----------
+elif choice == "Submit Ride":
+    st.title("Submit a Ride")
     with st.form("ride_form"):
         origin = st.text_input("Origin Postcode (NL)")
         destination = st.text_input("Destination Postcode (NL)")
-        departure = st.time_input("Departure Time", value=datetime.now().time())
-        max_extra_km = st.number_input("Max extra distance (km)", 0.0, 100.0, 5.0, step=0.5)
-        max_extra_min = st.number_input("Max extra time (minutes)", 0, 240, 15, step=5)
+        ride_date = st.date_input("Date of departure", value=datetime.today())
+        departure = st.time_input("Expected Departure Time", value=datetime.now().time())
+        role = st.radio("I am a", ["driver", "passenger"])
+        max_extra_km, pickup = None, None
+        if role == "driver":
+            max_extra_km = st.number_input("Max extra distance (km)", 0.0, 100.0, 5.0, step=0.5)
+        else:
+            pickup = st.text_input("Exact pickup location")
         submit = st.form_submit_button("Submit Ride")
 
     if submit:
@@ -177,137 +213,52 @@ if view == "Post Ride":
         dest_coords = geocode_postcode_cached(destination)
         payload = {
             "user_id": st.session_state.user["id"],
+            "role": role,
             "origin": origin.strip().upper(),
             "destination": destination.strip().upper(),
+            "ride_date": ride_date.isoformat(),
             "departure": format_departure(departure),
             "origin_coords": origin_coords,
             "dest_coords": dest_coords,
-            "max_extra_km": float(max_extra_km),
-            "max_extra_min": int(max_extra_min),
+            "max_extra_km": float(max_extra_km) if max_extra_km else None,
+            "pickup_location": pickup,
             "created_at": datetime.utcnow().isoformat(),
         }
-        if insert_table_row("rides", payload):
+        new_ride = insert_table_row("rides", payload)
+        if new_ride:
             st.success("Ride posted!")
-
-# ---------- Post Passenger ----------
-elif view == "Post Passenger":
-    st.title("Post a Passenger Request")
-    with st.form("passenger_form"):
-        origin = st.text_input("Origin Postcode (NL)")
-        destination = st.text_input("Destination Postcode (NL)")
-        departure = st.time_input("Departure Time", value=datetime.now().time())
-        submit = st.form_submit_button("Submit Request")
-
-    if submit:
-        origin_coords = geocode_postcode_cached(origin)
-        dest_coords = geocode_postcode_cached(destination)
-        payload = {
-            "user_id": st.session_state.user["id"],
-            "origin": origin.strip().upper(),
-            "destination": destination.strip().upper(),
-            "departure": format_departure(departure),
-            "origin_coords": origin_coords,
-            "dest_coords": dest_coords,
-            "created_at": datetime.utcnow().isoformat(),
-        }
-        if insert_table_row("passengers", payload):
-            st.success("Passenger request posted!")
-
-# ---------- Find Matches ----------
-elif view == "Find Matches":
-    st.title("Find Matches (Detour-based)")
-    passengers = get_table_rows("passengers", {"user_id": st.session_state.user["id"]})
-    rides = get_table_rows("rides")
-
-    if not passengers:
-        st.info("You need to post a passenger request first.")
-    else:
-        passenger = passengers[-1]
-        st.write(f"Passenger: {passenger.get('origin')} → {passenger.get('destination')}")
-
-        matches = []
-        for ride in rides:
-            if ride["user_id"] == st.session_state.user["id"]:  # 🚫 skip own rides
-                continue
-            if not ride.get("origin_coords") or not ride.get("dest_coords"):
-                continue
-            base_dist, _ = route_distance_time(ride["origin_coords"], ride["dest_coords"])
-            d1, _ = route_distance_time(ride["origin_coords"], passenger["origin_coords"])
-            d2, _ = route_distance_time(passenger["origin_coords"], passenger["dest_coords"])
-            d3, _ = route_distance_time(passenger["dest_coords"], ride["dest_coords"])
-            if None in (base_dist, d1, d2, d3):
-                continue
-            detour_dist = d1 + d2 + d3
-            extra_dist = detour_dist - base_dist
-
-            if extra_dist <= ride.get("max_extra_km", 999):
-                fee_passenger = detour_dist * 0.12
-                earning_rider = detour_dist * 0.10
-                matches.append((ride, detour_dist, fee_passenger, earning_rider))
-
-        if matches:
-            st.subheader("Matching Rides:")
-            for ride, dist, fee_p, earn_r in matches:
-                st.write(f"🚗 {ride['origin']} → {ride['destination']} at {ride['departure']}")
-                st.write(f"   Distance: {dist:.1f} km | Passenger pays €{fee_p:.2f} | Rider earns €{earn_r:.2f}")
-                if st.button(f"Request Match with {ride['id']}"):
-                    insert_table_row("matches", {
-                        "ride_id": ride["id"],
-                        "passenger_id": passenger["id"],
-                        "status": "requested",
-                        "created_at": datetime.utcnow().isoformat(),
-                    })
-                    st.success("Match requested!")
-        else:
-            st.warning("No suitable matches found.")
+            check_for_matches(new_ride[0])
 
 # ---------- My Matches ----------
-elif view == "My Matches":
+elif choice == "My Matches":
     st.title("My Matches")
-    matches = get_table_rows("matches", {"status": "requested"})
-    for match in matches:
-        # Passenger flow
-        if match.get("passenger_id") and st.session_state.user["id"] == match["passenger_id"]:
-            pickup = st.text_input(f"Pickup location for match {match['id']}")
-            if st.button(f"Confirm pickup {match['id']}"):
-                update_table_row("matches", match["id"], {"pickup": pickup, "status": "passenger_confirmed"})
-                st.success("Pickup shared with driver.")
+    my_rides = get_table_rows("rides", {"user_id": st.session_state.user["id"]})
+    ride_ids = [r["id"] for r in my_rides]
+    all_matches = get_table_rows("matches")
+    my_matches = [m for m in all_matches if m["driver_id"] in ride_ids or m["passenger_id"] in ride_ids]
 
-        # Driver flow
-        if match.get("ride_id"):
-            ride = get_table_rows("rides", {"id": match["ride_id"]})
-            if ride and st.session_state.user["id"] == ride[0]["user_id"]:
-                brand = st.text_input(f"Car brand for match {match['id']}")
-                color = st.text_input(f"Car color for match {match['id']}")
-                plate = st.text_input(f"License plate (optional) for match {match['id']}")
-                if st.button(f"Final confirm {match['id']}"):
-                    update_table_row("matches", match["id"], {
-                        "car_brand": brand,
-                        "car_color": color,
-                        "car_plate": plate,
-                        "status": "driver_confirmed"
-                    })
-                    st.success("Ride confirmed!")
+    if not my_matches:
+        st.info("No matches yet.")
+    for m in my_matches:
+        st.write(m)
 
 # ---------- Ratings ----------
-elif view == "Rate":
+elif choice == "Rate":
     st.title("Rate your rides")
     confirmed_matches = get_table_rows("matches", {"status": "driver_confirmed"})
     for match in confirmed_matches:
-        # Passenger rates driver
         if match.get("passenger_id") == st.session_state.user["id"]:
             rating = st.slider(f"Rate your driver for match {match['id']}", 1, 5)
             if st.button(f"Submit rating driver {match['id']}"):
                 update_table_row("matches", match["id"], {"rating_driver": rating})
                 st.success("Rating submitted!")
-
-        # Driver rates passenger
-        ride = get_table_rows("rides", {"id": match["ride_id"]})
-        if ride and ride[0]["user_id"] == st.session_state.user["id"]:
+        my_rides = get_table_rows("rides", {"id": match["ride_id"]})
+        if my_rides and my_rides[0]["user_id"] == st.session_state.user["id"]:
             rating = st.slider(f"Rate your passenger for match {match['id']}", 1, 5)
             if st.button(f"Submit rating passenger {match['id']}"):
                 update_table_row("matches", match["id"], {"rating_passenger": rating})
                 st.success("Rating submitted!")
+
 
 # ---------- Debug ----------
 elif view == "Debug":
