@@ -112,12 +112,11 @@ if not st.session_state.user:
     st.stop()
 
 # ===========================
-# DB HELPERS (fixed filtering)
+# DB HELPERS
 # ===========================
 def insert_table_row(table_name: str, payload: dict):
     try:
         res = supabase.table(table_name).insert(payload).execute()
-        # new client returns `res.data` or raises
         if not getattr(res, "data", None):
             st.error(f"Insert error: {res}")
             return None
@@ -126,19 +125,21 @@ def insert_table_row(table_name: str, payload: dict):
         st.error(f"Insert exception: {e}")
         return None
 
+def update_table_row(table_name: str, row_id: str, payload: dict):  # NEW
+    try:
+        res = supabase.table(table_name).update(payload).eq("id", row_id).execute()
+        return res.data
+    except Exception as e:
+        st.error(f"Update exception: {e}")
+        return None
 
 def get_table_rows(table_name: str, filter_by: dict = None):
-    """
-    Builds a query with .select("*") then chains filters using .eq / .filter.
-    filter_by should be a dict of {column: value} for equality filters.
-    """
     try:
         query = supabase.table(table_name).select("*")
         if filter_by:
             for k, v in filter_by.items():
                 query = query.eq(k, v)
         res = query.execute()
-        # ✅ Just return data directly
         return res.data or []
     except Exception as e:
         st.error(f"Query exception: {e}")
@@ -158,7 +159,7 @@ if st.sidebar.button("Log out"):
     st.info("Logged out. Please refresh the page.")
     st.stop()
 
-view = st.sidebar.radio("Go to", ["Post Ride", "Post Passenger", "Find Matches", "Debug"])
+view = st.sidebar.radio("Go to", ["Post Ride", "Post Passenger", "Find Matches", "My Matches", "Rate", "Debug"])
 
 # ---------- Post Ride ----------
 if view == "Post Ride":
@@ -215,17 +216,6 @@ elif view == "Post Passenger":
 # ---------- Find Matches ----------
 elif view == "Find Matches":
     st.title("Find Matches (Detour-based)")
-
-    # Passenger filter settings
-    with st.expander("🔍 Search Filters"):
-        dep_postcode = st.text_input("Departure Postcode (NL)")
-        dep_radius = st.number_input("Departure radius (km)", 0.0, 50.0, 5.0)
-        arr_postcode = st.text_input("Arrival Postcode (NL)")
-        arr_radius = st.number_input("Arrival radius (km)", 0.0, 50.0, 5.0)
-        dep_time = st.time_input("Preferred Departure Time", value=datetime.now().time())
-        dep_flex = st.number_input("Flexibility (minutes)", 0, 180, 15)
-
-    # Get the passenger(s) posted by current user
     passengers = get_table_rows("passengers", {"user_id": st.session_state.user["id"]})
     rides = get_table_rows("rides")
 
@@ -236,36 +226,11 @@ elif view == "Find Matches":
         st.write(f"Passenger: {passenger.get('origin')} → {passenger.get('destination')}")
 
         matches = []
-        passenger_dep = datetime.combine(datetime.today(), dep_time)
-        earliest = (passenger_dep - timedelta(minutes=dep_flex)).time()
-        latest = (passenger_dep + timedelta(minutes=dep_flex)).time()
-
-        dep_coords = geocode_postcode_cached(dep_postcode) if dep_postcode else None
-        arr_coords = geocode_postcode_cached(arr_postcode) if arr_postcode else None
-
         for ride in rides:
+            if ride["user_id"] == st.session_state.user["id"]:  # 🚫 skip own rides
+                continue
             if not ride.get("origin_coords") or not ride.get("dest_coords"):
                 continue
-
-            # Time filter
-            try:
-                ride_dep = datetime.strptime(ride["departure"], "%H:%M:%S").time()
-            except Exception:
-                continue
-            if not (earliest <= ride_dep <= latest):
-                continue
-
-            # Departure proximity filter
-            if dep_coords:
-                if haversine_km(dep_coords, ride["origin_coords"]) > dep_radius:
-                    continue
-
-            # Arrival proximity filter
-            if arr_coords:
-                if haversine_km(arr_coords, ride["dest_coords"]) > arr_radius:
-                    continue
-
-            # Detour logic
             base_dist, _ = route_distance_time(ride["origin_coords"], ride["dest_coords"])
             d1, _ = route_distance_time(ride["origin_coords"], passenger["origin_coords"])
             d2, _ = route_distance_time(passenger["origin_coords"], passenger["dest_coords"])
@@ -276,15 +241,73 @@ elif view == "Find Matches":
             extra_dist = detour_dist - base_dist
 
             if extra_dist <= ride.get("max_extra_km", 999):
-                matches.append((ride, extra_dist))
+                fee_passenger = detour_dist * 0.12
+                earning_rider = detour_dist * 0.10
+                matches.append((ride, detour_dist, fee_passenger, earning_rider))
 
         if matches:
             st.subheader("Matching Rides:")
-            for ride, ex_d in matches:
+            for ride, dist, fee_p, earn_r in matches:
                 st.write(f"🚗 {ride['origin']} → {ride['destination']} at {ride['departure']}")
-                st.write(f"   Extra distance: {ex_d:.1f} km (max {ride.get('max_extra_km')})")
+                st.write(f"   Distance: {dist:.1f} km | Passenger pays €{fee_p:.2f} | Rider earns €{earn_r:.2f}")
+                if st.button(f"Request Match with {ride['id']}"):
+                    insert_table_row("matches", {
+                        "ride_id": ride["id"],
+                        "passenger_id": passenger["id"],
+                        "status": "requested",
+                        "created_at": datetime.utcnow().isoformat(),
+                    })
+                    st.success("Match requested!")
         else:
             st.warning("No suitable matches found.")
+
+# ---------- My Matches ----------
+elif view == "My Matches":
+    st.title("My Matches")
+    matches = get_table_rows("matches", {"status": "requested"})
+    for match in matches:
+        # Passenger flow
+        if match.get("passenger_id") and st.session_state.user["id"] == match["passenger_id"]:
+            pickup = st.text_input(f"Pickup location for match {match['id']}")
+            if st.button(f"Confirm pickup {match['id']}"):
+                update_table_row("matches", match["id"], {"pickup": pickup, "status": "passenger_confirmed"})
+                st.success("Pickup shared with driver.")
+
+        # Driver flow
+        if match.get("ride_id"):
+            ride = get_table_rows("rides", {"id": match["ride_id"]})
+            if ride and st.session_state.user["id"] == ride[0]["user_id"]:
+                brand = st.text_input(f"Car brand for match {match['id']}")
+                color = st.text_input(f"Car color for match {match['id']}")
+                plate = st.text_input(f"License plate (optional) for match {match['id']}")
+                if st.button(f"Final confirm {match['id']}"):
+                    update_table_row("matches", match["id"], {
+                        "car_brand": brand,
+                        "car_color": color,
+                        "car_plate": plate,
+                        "status": "driver_confirmed"
+                    })
+                    st.success("Ride confirmed!")
+
+# ---------- Ratings ----------
+elif view == "Rate":
+    st.title("Rate your rides")
+    confirmed_matches = get_table_rows("matches", {"status": "driver_confirmed"})
+    for match in confirmed_matches:
+        # Passenger rates driver
+        if match.get("passenger_id") == st.session_state.user["id"]:
+            rating = st.slider(f"Rate your driver for match {match['id']}", 1, 5)
+            if st.button(f"Submit rating driver {match['id']}"):
+                update_table_row("matches", match["id"], {"rating_driver": rating})
+                st.success("Rating submitted!")
+
+        # Driver rates passenger
+        ride = get_table_rows("rides", {"id": match["ride_id"]})
+        if ride and ride[0]["user_id"] == st.session_state.user["id"]:
+            rating = st.slider(f"Rate your passenger for match {match['id']}", 1, 5)
+            if st.button(f"Submit rating passenger {match['id']}"):
+                update_table_row("matches", match["id"], {"rating_passenger": rating})
+                st.success("Rating submitted!")
 
 # ---------- Debug ----------
 elif view == "Debug":
@@ -292,3 +315,4 @@ elif view == "Debug":
     st.json({"user": st.session_state.user})
     st.json({"rides": get_table_rows("rides")})
     st.json({"passengers": get_table_rows("passengers")})
+    st.json({"matches": get_table_rows("matches")})
