@@ -4,9 +4,7 @@ from datetime import datetime, time, timedelta
 from functools import lru_cache
 import math
 import time as pytime
-from geopy.geocoders import Nominatim
 import requests
-import json
 
 # ===========================
 # CONFIG / INIT
@@ -15,15 +13,17 @@ st.set_page_config(page_title="Ridesharing MVP", layout="centered")
 
 SUPABASE_URL = st.secrets.get("SUPABASE_URL")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY")
+OPENCAGE_KEY = st.secrets.get("OPENCAGE_KEY")  # 👈 add this to your Streamlit Secrets
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     st.error("Missing Supabase secrets. Add SUPABASE_URL and SUPABASE_KEY in Streamlit Cloud Secrets.")
     st.stop()
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+if not OPENCAGE_KEY:
+    st.error("Missing OpenCage key. Add OPENCAGE_KEY to Streamlit Cloud Secrets.")
+    st.stop()
 
-ORS_API_KEY = st.secrets.get("ORS_API_KEY", None)
-ORS_URL = "https://api.openrouteservice.org/v2/directions/driving-car"
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ===========================
 # HELPERS
@@ -39,20 +39,34 @@ def format_departure(dep):
             return dep
     return str(dep)
 
+
 @lru_cache(maxsize=1000)
 def geocode_postcode_cached(postcode: str, retries=2):
-    geolocator = Nominatim(user_agent="ridesharing_app")
+    """
+    Geocode a Dutch postcode using OpenCage API.
+    Returns [lat, lon] or [] if not found.
+    """
+    url = f"https://api.opencagedata.com/geocode/v1/json?q={postcode},Netherlands&key={OPENCAGE_KEY}&limit=1"
     for attempt in range(retries + 1):
         try:
-            location = geolocator.geocode(postcode + ", Netherlands", timeout=10)
-            if location:
-                return [location.latitude, location.longitude]
-            return []
-        except Exception:
-            if attempt < retries:
-                pytime.sleep(1)
-                continue
-            return []
+            r = requests.get(url, timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                results = data.get("results", [])
+                if results:
+                    lat = results[0]["geometry"]["lat"]
+                    lon = results[0]["geometry"]["lng"]
+                    return [lat, lon]
+                else:
+                    st.warning(f"No results for postcode {postcode}.")
+                    return []
+            else:
+                st.warning(f"OpenCage error ({r.status_code}): {r.text}")
+        except Exception as e:
+            st.warning(f"Geocoding error ({attempt+1}/{retries}): {e}")
+            pytime.sleep(1)
+    return []
+
 
 def haversine_km(a, b):
     if not a or not b:
@@ -62,27 +76,9 @@ def haversine_km(a, b):
     dlat = lat2 - lat1
     dlon = lon2 - lon1
     R = 6371.0
-    h = math.sin(dlat/2)**2 + math.cos(lat1)*math.cos(lat2)*math.sin(dlon/2)**2
+    h = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
     return 2 * R * math.asin(math.sqrt(h))
 
-def fetch_route_from_ors(start_lat, start_lon, end_lat, end_lon):
-    """Fetch a route from OpenRouteService (uses header auth, 2025 format)."""
-    if not ORS_API_KEY:
-        return None
-    try:
-        headers = {"Authorization": ORS_API_KEY}
-        params = {"start": f"{start_lon},{start_lat}", "end": f"{end_lon},{end_lat}"}
-        r = requests.get(ORS_URL, headers=headers, params=params, timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        feat = data["features"][0]
-        coords = feat["geometry"]["coordinates"]
-        distance_m = int(round(feat["properties"]["summary"]["distance"]))
-        duration_s = int(round(feat["properties"]["summary"]["duration"]))
-        return {"coords": coords, "distance_m": distance_m, "duration_s": duration_s}
-    except Exception as e:
-        st.warning(f"ORS fetch failed: {e}")
-        return None
 
 # ===========================
 # AUTH
@@ -92,10 +88,12 @@ if "user" not in st.session_state:
 if "access_token" not in st.session_state:
     st.session_state.access_token = None
 
+
 def normalize_user(user_obj):
     if not user_obj:
         return None
     return {"id": getattr(user_obj, "id", None), "email": getattr(user_obj, "email", None)}
+
 
 def show_login():
     st.title("Login or Register")
@@ -119,6 +117,7 @@ def show_login():
         except Exception as e:
             st.error(f"Auth error: {e}")
 
+
 if not st.session_state.user:
     show_login()
     st.stop()
@@ -129,12 +128,11 @@ if not st.session_state.user:
 def insert_table_row(table_name: str, payload: dict):
     try:
         res = supabase.table(table_name).insert(payload).execute()
-        if getattr(res, "error", None):
-            st.error(f"Insert error: {res.error}")
         return res.data if getattr(res, "data", None) else []
     except Exception as e:
         st.error(f"Insert exception: {e}")
         return []
+
 
 def update_table_row(table_name: str, row_id: str, payload: dict):
     try:
@@ -143,6 +141,7 @@ def update_table_row(table_name: str, row_id: str, payload: dict):
     except Exception as e:
         st.error(f"Update exception: {e}")
         return None
+
 
 def get_table_rows(table_name: str, filter_by: dict = None):
     try:
@@ -155,6 +154,7 @@ def get_table_rows(table_name: str, filter_by: dict = None):
     except Exception as e:
         st.error(f"Query exception: {e}")
         return []
+
 
 # ===========================
 # MATCH LOGIC
@@ -180,13 +180,17 @@ def check_for_matches(new_ride):
         if haversine_km(driver["dest_coords"], passenger["dest_coords"]) > driver.get("max_extra_km", 999):
             continue
 
-        insert_table_row("matches", {
-            "driver_id": driver["id"],
-            "passenger_id": passenger["id"],
-            "status": "requested",
-            "created_at": datetime.utcnow().isoformat(),
-        })
+        insert_table_row(
+            "matches",
+            {
+                "driver_id": driver["id"],
+                "passenger_id": passenger["id"],
+                "status": "requested",
+                "created_at": datetime.utcnow().isoformat(),
+            },
+        )
         st.info("🚀 Match found! Check 'My Matches' to confirm.")
+
 
 # ===========================
 # MAIN UI
@@ -211,13 +215,16 @@ if choice == "Welcome":
             song = st.text_input("Favorite car song")
             submit = st.form_submit_button("Save profile")
         if submit:
-            insert_table_row("profiles", {
-                "id": st.session_state.user["id"],
-                "name": name,
-                "car_brand": brand,
-                "car_color": color,
-                "fav_song": song,
-            })
+            insert_table_row(
+                "profiles",
+                {
+                    "id": st.session_state.user["id"],
+                    "name": name,
+                    "car_brand": brand,
+                    "car_color": color,
+                    "fav_song": song,
+                },
+            )
             st.success("Profile saved! Please refresh.")
 
 # ---------- Submit Ride ----------
@@ -239,6 +246,7 @@ elif choice == "Submit Ride":
     if submit:
         origin_coords = geocode_postcode_cached(origin)
         dest_coords = geocode_postcode_cached(destination)
+
         if not origin_coords or not dest_coords:
             st.error("Could not geocode one or both postcodes. Try a nearby one.")
             st.stop()
