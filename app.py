@@ -5,6 +5,8 @@ from functools import lru_cache
 import math
 import time as pytime
 from geopy.geocoders import Nominatim
+import requests
+import json
 
 # ===========================
 # CONFIG / INIT
@@ -19,6 +21,9 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     st.stop()
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+ORS_API_KEY = st.secrets.get("ORS_API_KEY", None)
+ORS_URL = "https://api.openrouteservice.org/v2/directions/driving-car"
 
 # ===========================
 # HELPERS
@@ -60,6 +65,25 @@ def haversine_km(a, b):
     h = math.sin(dlat/2)**2 + math.cos(lat1)*math.cos(lat2)*math.sin(dlon/2)**2
     return 2 * R * math.asin(math.sqrt(h))
 
+def fetch_route_from_ors(start_lat, start_lon, end_lat, end_lon):
+    """Fetch a route from OpenRouteService (uses header auth, 2025 format)."""
+    if not ORS_API_KEY:
+        return None
+    try:
+        headers = {"Authorization": ORS_API_KEY}
+        params = {"start": f"{start_lon},{start_lat}", "end": f"{end_lon},{end_lat}"}
+        r = requests.get(ORS_URL, headers=headers, params=params, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        feat = data["features"][0]
+        coords = feat["geometry"]["coordinates"]
+        distance_m = int(round(feat["properties"]["summary"]["distance"]))
+        duration_s = int(round(feat["properties"]["summary"]["duration"]))
+        return {"coords": coords, "distance_m": distance_m, "duration_s": duration_s}
+    except Exception as e:
+        st.warning(f"ORS fetch failed: {e}")
+        return None
+
 # ===========================
 # AUTH
 # ===========================
@@ -86,7 +110,9 @@ def show_login():
                 resp = supabase.auth.sign_up({"email": email, "password": password})
             if getattr(resp, "user", None):
                 st.session_state.user = normalize_user(resp.user)
-                st.session_state.access_token = resp.session.access_token if getattr(resp, "session", None) else None
+                st.session_state.access_token = (
+                    resp.session.access_token if getattr(resp, "session", None) else None
+                )
                 st.success(f"{action} successful. You are logged in as {resp.user.email}.")
             else:
                 st.error(f"{action} failed: {resp}")
@@ -103,6 +129,8 @@ if not st.session_state.user:
 def insert_table_row(table_name: str, payload: dict):
     try:
         res = supabase.table(table_name).insert(payload).execute()
+        if getattr(res, "error", None):
+            st.error(f"Insert error: {res.error}")
         return res.data if getattr(res, "data", None) else []
     except Exception as e:
         st.error(f"Insert exception: {e}")
@@ -211,6 +239,10 @@ elif choice == "Submit Ride":
     if submit:
         origin_coords = geocode_postcode_cached(origin)
         dest_coords = geocode_postcode_cached(destination)
+        if not origin_coords or not dest_coords:
+            st.error("Could not geocode one or both postcodes. Try a nearby one.")
+            st.stop()
+
         payload = {
             "user_id": st.session_state.user["id"],
             "role": role,
@@ -258,12 +290,3 @@ elif choice == "Rate":
             if st.button(f"Submit rating passenger {match['id']}"):
                 update_table_row("matches", match["id"], {"rating_passenger": rating})
                 st.success("Rating submitted!")
-
-
-# ---------- Debug ----------
-elif view == "Debug":
-    st.title("Debug Info")
-    st.json({"user": st.session_state.user})
-    st.json({"rides": get_table_rows("rides")})
-    st.json({"passengers": get_table_rows("passengers")})
-    st.json({"matches": get_table_rows("matches")})
