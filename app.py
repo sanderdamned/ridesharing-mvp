@@ -13,10 +13,10 @@ st.set_page_config(page_title="Ridesharing MVP", layout="centered")
 
 SUPABASE_URL = st.secrets.get("SUPABASE_URL")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY")
-OPENCAGE_KEY = st.secrets.get("OPENCAGE_KEY")  # 👈 add this to your Streamlit Secrets
+OPENCAGE_KEY = st.secrets.get("OPENCAGE_KEY")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    st.error("Missing Supabase secrets. Add SUPABASE_URL and SUPABASE_KEY in Streamlit Cloud Secrets.")
+    st.error("Missing Supabase secrets.")
     st.stop()
 
 if not OPENCAGE_KEY:
@@ -42,10 +42,7 @@ def format_departure(dep):
 
 @lru_cache(maxsize=1000)
 def geocode_postcode_cached(postcode: str, retries=2):
-    """
-    Geocode a Dutch postcode using OpenCage API.
-    Returns [lat, lon] or [] if not found.
-    """
+    """Geocode a Dutch postcode using OpenCage API."""
     url = f"https://api.opencagedata.com/geocode/v1/json?q={postcode},Netherlands&key={OPENCAGE_KEY}&limit=1"
     for attempt in range(retries + 1):
         try:
@@ -57,9 +54,7 @@ def geocode_postcode_cached(postcode: str, retries=2):
                     lat = results[0]["geometry"]["lat"]
                     lon = results[0]["geometry"]["lng"]
                     return [lat, lon]
-                else:
-                    st.warning(f"No results for postcode {postcode}.")
-                    return []
+                return []
             else:
                 st.warning(f"OpenCage error ({r.status_code}): {r.text}")
         except Exception as e:
@@ -160,7 +155,11 @@ def get_table_rows(table_name: str, filter_by: dict = None):
 # MATCH LOGIC
 # ===========================
 def check_for_matches(new_ride):
+    """Automatically select the best matching ride based on time & route."""
     rides = get_table_rows("rides", {"ride_date": new_ride["ride_date"]})
+    best_match = None
+    best_distance = 9999
+
     for ride in rides:
         if ride["id"] == new_ride["id"]:
             continue
@@ -170,16 +169,29 @@ def check_for_matches(new_ride):
         driver = new_ride if new_ride["role"] == "driver" else ride
         passenger = new_ride if new_ride["role"] == "passenger" else ride
 
+        # --- Time proximity check ---
         dep_driver = datetime.strptime(driver["departure"], "%H:%M:%S")
         dep_pass = datetime.strptime(passenger["departure"], "%H:%M:%S")
-        if not (dep_driver - timedelta(minutes=15) <= dep_pass <= dep_driver + timedelta(minutes=5)):
+        if not (dep_driver - timedelta(minutes=15) <= dep_pass <= dep_driver + timedelta(minutes=15)):
             continue
 
-        if haversine_km(driver["origin_coords"], passenger["origin_coords"]) > driver.get("max_extra_km", 999):
+        # --- Route proximity check ---
+        origin_dist = haversine_km(driver["origin_coords"], passenger["origin_coords"])
+        dest_dist = haversine_km(driver["dest_coords"], passenger["dest_coords"])
+        total_dist = origin_dist + dest_dist
+
+        if origin_dist > driver.get("max_extra_km", 999):
             continue
-        if haversine_km(driver["dest_coords"], passenger["dest_coords"]) > driver.get("max_extra_km", 999):
+        if dest_dist > driver.get("max_extra_km", 999):
             continue
 
+        # --- Keep closest route ---
+        if total_dist < best_distance:
+            best_distance = total_dist
+            best_match = (driver, passenger)
+
+    if best_match:
+        driver, passenger = best_match
         insert_table_row(
             "matches",
             {
@@ -189,7 +201,9 @@ def check_for_matches(new_ride):
                 "created_at": datetime.utcnow().isoformat(),
             },
         )
-        st.info("🚀 Match found! Check 'My Matches' to confirm.")
+        st.success("🚀 Match found automatically!")
+    else:
+        st.info("No match yet — your ride will stay pending until another suitable ride is added.")
 
 
 # ===========================
@@ -292,7 +306,7 @@ elif choice == "Rate":
             if st.button(f"Submit rating driver {match['id']}"):
                 update_table_row("matches", match["id"], {"rating_driver": rating})
                 st.success("Rating submitted!")
-        my_rides = get_table_rows("rides", {"id": match["ride_id"]})
+        my_rides = get_table_rows("rides", {"id": match.get("ride_id")})
         if my_rides and my_rides[0]["user_id"] == st.session_state.user["id"]:
             rating = st.slider(f"Rate your passenger for match {match['id']}", 1, 5)
             if st.button(f"Submit rating passenger {match['id']}"):
